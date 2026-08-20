@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <!-- Maskable: the launcher may crop to a circle, so the mark sits inside the
+       safe zone (the middle 80%) and the teal bleeds to every edge. -->
+  <rect width="192" height="192" fill="#2f6f62" />
+  <g fill="#f5f3ee">
+    <rect x="55" y="106" width="22" height="34" rx="11" />
+    <rect x="85" y="84" width="22" height="56" rx="11" />
+    <rect x="115" y="52" width="22" height="88" rx="11" />
+  </g>
+</svg>

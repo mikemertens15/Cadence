@@ -1,0 +1,200 @@
+/* Both skins live here as custom properties, and theme.js hands out each colour
+   as a `var(--…)` reference. A component writes `colors.ink` and never knows
+   which skin it's in.
+
+   One dial, stamped on <html> by the boot script in index.html before first
+   paint (so there's no flash of the wrong one):
+     data-mode   light | dark      (resolved from the OS when unset)
+
+   Keep the token order identical in both blocks; it's what makes them
+   reviewable side by side. */
+
+:root,
+:root[data-mode='light'] {
+  color-scheme: light;
+
+  --c-bg: #f5f3ee;
+  --c-card: #fffefb;
+  --c-card-border: #e6e1d6;
+  --c-nav-bar: rgba(255, 254, 251, 0.92);
+  --c-accent: #2f6f62;
+  --c-accent-dark: #275c51;
+  --c-on-accent: #ffffff;
+  --c-ink: #232722;
+  --c-muted: #9c9789;
+  --c-muted2: #7c7768;
+  --c-muted3: #5c5849;
+  --c-faint: #b8b2a2;
+  --c-divider: #eeeae0;
+  --c-chip-bg: #eae5d9;
+  --c-input-bg: #faf8f2;
+  --c-input-border: #e0dacc;
+  --c-track: #e9e4d8;
+  --c-selected: #a8ccc0;
+  --c-today-bg: #f0f7f3;
+  --c-scroll-thumb: #d5cfc0;
+
+  --t-red: #b45a4a;
+  --t-amber: #c8973f;
+  --t-amber-text: #946d20;
+  --t-green: #4f8a6b;
+  --t-blue: #4a6f9c;
+
+  --g-hero: linear-gradient(135deg, #2f6f62, #1f4f46);
+  --s-accent: 0 2px 8px rgba(47, 111, 98, 0.28);
+  --s-modal: 0 24px 60px rgba(25, 32, 25, 0.26);
+  --s-backdrop: rgba(35, 39, 34, 0.42);
+
+  /* Course tags. Real per-course identity, so they must stay distinguishable
+     from each other rather than shading the one accent. `soft` is the chip
+     background, the bare name is the dot/rule/text colour on it. */
+  --k-teal: #2f6f62;
+  --k-teal-soft: #dceae5;
+  --k-indigo: #4a5fa5;
+  --k-indigo-soft: #dfe3f3;
+  --k-plum: #7a4f86;
+  --k-plum-soft: #eadff0;
+  --k-clay: #a85f3f;
+  --k-clay-soft: #f4e2d8;
+  --k-moss: #5b7a3f;
+  --k-moss-soft: #e4edd8;
+  --k-amber: #946d20;
+  --k-amber-soft: #f4e9cf;
+  --k-slate: #4d6473;
+  --k-slate-soft: #dee7ed;
+  --k-rose: #a44f63;
+  --k-rose-soft: #f4dee4;
+}
+
+:root[data-mode='dark'] {
+  color-scheme: dark;
+
+  --c-bg: #141614;
+  --c-card: #1d201d;
+  --c-card-border: #2b2f2b;
+  --c-nav-bar: rgba(20, 22, 20, 0.92);
+  --c-accent: #6aab99;
+  --c-accent-dark: #55907f;
+  --c-on-accent: #10201b;
+  --c-ink: #e9ece6;
+  --c-muted: #7e857b;
+  --c-muted2: #9ba296;
+  --c-muted3: #bcc2b6;
+  --c-faint: #626960;
+  --c-divider: #262a26;
+  --c-chip-bg: #2a2f2a;
+  --c-input-bg: #191c19;
+  --c-input-border: #343a34;
+  --c-track: #2a2f2a;
+  --c-selected: #3d6357;
+  --c-today-bg: #1b2622;
+  --c-scroll-thumb: #363c36;
+
+  --t-red: #d1806e;
+  --t-amber: #d3ab63;
+  --t-amber-text: #cea55e;
+  --t-green: #7cb595;
+  --t-blue: #7fa3cc;
+
+  --g-hero: linear-gradient(135deg, #2c5b51, #17332d);
+  --s-accent: 0 2px 10px rgba(0, 0, 0, 0.45);
+  --s-modal: 0 24px 60px rgba(0, 0, 0, 0.6);
+  --s-backdrop: rgba(6, 8, 6, 0.62);
+
+  --k-teal: #6aab99;
+  --k-teal-soft: #22332e;
+  --k-indigo: #8b9bdc;
+  --k-indigo-soft: #262b3d;
+  --k-plum: #b98cc4;
+  --k-plum-soft: #322838;
+  --k-clay: #d89268;
+  --k-clay-soft: #3a2a20;
+  --k-moss: #9cbb70;
+  --k-moss-soft: #28321d;
+  --k-amber: #d3ab63;
+  --k-amber-soft: #352d19;
+  --k-slate: #8fa8b8;
+  --k-slate-soft: #232d34;
+  --k-rose: #d68a9c;
+  --k-rose-soft: #372329;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--c-bg);
+  color: var(--c-ink);
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+input,
+button,
+textarea,
+select {
+  font-family: inherit;
+}
+
+button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+  padding: 0;
+}
+
+/* Dark mode otherwise gets the browser's own light chrome for date, time and
+   number pickers, and for placeholder text. */
+input,
+textarea,
+select {
+  color-scheme: inherit;
+}
+
+::placeholder {
+  color: var(--c-faint);
+  opacity: 1;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--c-scroll-thumb);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+/* Grades are read as a column of numbers — proportional digits make 88 and 100
+   wobble against each other. Anything showing a score opts into this. */
+.cad-nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/* The phone tab bar sits on top of the page; keep it clear of the home
+   indicator on notched devices. */
+.cad-safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* The schedule grid and the grade table are both wider than a phone. They
+   scroll inside their own box rather than making the whole page slide. */
+.cad-scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
