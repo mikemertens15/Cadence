@@ -1,6 +1,15 @@
 import { useMemo } from 'react';
 import { colors, fonts, courseColor } from '../theme';
-import { greeting, longDate, describeDue, toMinutes, fmtMinutes, fmtTimeRange, dowIndex } from '../dates';
+import {
+  greeting,
+  longDate,
+  describeDue,
+  toMinutes,
+  fmtTimeRange,
+  fmtDuration,
+  dowIndex,
+  DAY_NAMES_LONG,
+} from '../dates';
 import { useSemester } from '../data/SemesterProvider';
 import { useTermGrades } from '../data/grades';
 import { useIsPhone } from '../useMediaQuery';
@@ -15,11 +24,17 @@ import {
   GradeBadge,
   ProgressBar,
 } from '../components/ui';
+import { ClassRow, RoomChip, classState } from '../components/ClassRow';
 import { PrimaryButton } from '../components/Modal';
 
 // The landing screen answers three questions in the order they get asked:
 // where do I need to be, what's coming at me, and how am I doing. Anything that
 // isn't one of those belongs on another tab.
+//
+// "Where do I need to be" gets the most room, because it's the one that's asked
+// while walking. It's answered twice on purpose: once as a single glanceable
+// card for the class happening now or next, and once as the full day, because a
+// five-class Monday is a thing you want to see the shape of.
 
 const DUE_SOON_DAYS = 5;
 
@@ -32,23 +47,51 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment }) {
   const today = dowIndex(now);
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
-  const todaysClasses = useMemo(
-    () =>
-      meetings
-        .filter((m) => m.day_of_week === today)
-        .map((m) => ({
-          id: m.id,
-          start: toMinutes(m.start_time),
-          end: toMinutes(m.end_time),
-          course: courseById.get(m.course_id),
-        }))
-        .filter((b) => b.course)
-        .sort((a, b) => a.start - b.start),
-    [meetings, today, courseById],
-  );
+  const blocksFor = useMemo(() => {
+    const byDay = new Map();
+    for (const m of meetings) {
+      const course = courseById.get(m.course_id);
+      if (!course) continue;
+      const list = byDay.get(m.day_of_week) ?? [];
+      list.push({
+        id: m.id,
+        day: m.day_of_week,
+        start: toMinutes(m.start_time),
+        end: toMinutes(m.end_time),
+        course,
+      });
+      byDay.set(m.day_of_week, list);
+    }
+    for (const list of byDay.values()) list.sort((a, b) => a.start - b.start);
+    return byDay;
+  }, [meetings, courseById]);
 
+  const todaysClasses = blocksFor.get(today) ?? [];
   const current = todaysClasses.find((b) => nowMinutes >= b.start && nowMinutes <= b.end);
   const next = todaysClasses.find((b) => b.start > nowMinutes);
+
+  // Nothing left today (a Sunday, or 4pm on a Friday) shouldn't be a dead end —
+  // the useful answer then is when you're next due somewhere. Scans forward a
+  // week so a Sunday evening check shows Monday morning.
+  const upcoming = useMemo(() => {
+    if (current || next) return null;
+    for (let i = 1; i <= 7; i++) {
+      const day = (today + i) % 7;
+      const list = blocksFor.get(day);
+      if (list?.length) {
+        return { day, offset: i, blocks: list, label: i === 1 ? 'Tomorrow' : DAY_NAMES_LONG[day] };
+      }
+    }
+    return null;
+  }, [current, next, today, blocksFor]);
+
+  // The day the list below shows: today while it still has classes ahead of it,
+  // otherwise the next day that does.
+  const shown = todaysClasses.length
+    ? { blocks: todaysClasses, label: 'Today', live: true }
+    : upcoming
+      ? { blocks: upcoming.blocks, label: upcoming.label, live: false }
+      : null;
 
   const dueSoon = useMemo(
     () =>
@@ -63,7 +106,7 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment }) {
   if (!courses.length) {
     return (
       <>
-        <Greeting now={now} />
+        <Greeting now={now} phone={phone} />
         <EmptyState
           title="Let's get your semester in"
           body="Add your courses — name, when they meet, and how they're graded — and this page fills itself in from there."
@@ -75,84 +118,130 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment }) {
 
   return (
     <>
-      <Greeting now={now} />
+      <Greeting now={now} phone={phone} />
 
-      <NextUp current={current} next={next} nowMinutes={nowMinutes} classesToday={todaysClasses.length} />
+      <NextUp
+        current={current}
+        next={next}
+        upcoming={upcoming}
+        nowMinutes={nowMinutes}
+        classesToday={todaysClasses.length}
+        phone={phone}
+      />
 
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: phone ? '1fr' : 'minmax(0, 1.25fr) minmax(0, 1fr)',
-          gap: phone ? 26 : 24,
+          gridTemplateColumns: phone ? '1fr' : 'minmax(0, 1.15fr) minmax(0, 1fr)',
+          gap: phone ? 24 : 24,
           alignItems: 'start',
-          marginTop: 26,
+          marginTop: 24,
         }}
       >
-        {/* ------------------------------------------------------- due soon */}
-        <section>
-          <SectionHeading
-            action={
-              <button
-                onClick={() => navigate('work')}
-                style={{ font: `600 12.5px ${fonts.sans}`, color: colors.accent }}
-              >
-                All work
-              </button>
-            }
-          >
-            Due soon
-          </SectionHeading>
-
-          {!dueSoon.length ? (
-            <EmptyState
-              title="Clear for now"
-              body={`Nothing due in the next ${DUE_SOON_DAYS} days.`}
-              action={<PrimaryButton onClick={onAddAssignment}>Add an assignment</PrimaryButton>}
-            />
-          ) : (
-            <div style={{ display: 'grid', gap: 8 }}>
-              {dueSoon.map(({ a, due }) => {
-                const course = courseById.get(a.course_id);
-                return (
-                  <Card
-                    key={a.id}
-                    as="button"
-                    onClick={() => navigate('work')}
-                    style={{
-                      padding: '12px 15px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 11,
-                      cursor: 'pointer',
-                    }}
+        <div style={{ display: 'grid', gap: 24, minWidth: 0 }}>
+          {shown && (
+            <section>
+              <SectionHeading
+                action={
+                  <button
+                    onClick={() => navigate('schedule')}
+                    style={{ font: `600 12.5px ${fonts.sans}`, color: colors.accent }}
                   >
-                    <CourseDot color={course?.color} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          font: `600 13.5px ${fonts.sans}`,
-                          color: colors.ink,
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                        }}
-                      >
-                        {a.title}
-                      </div>
-                      <div style={{ font: `500 11.5px ${fonts.sans}`, color: colors.muted2, marginTop: 2 }}>
-                        {course?.code || course?.name || 'No course'}
-                      </div>
-                    </div>
-                    <DuePill due={due} />
-                  </Card>
-                );
-              })}
-            </div>
-          )}
-        </section>
+                    Full week
+                  </button>
+                }
+              >
+                {shown.label === 'Today' ? "Today's classes" : shown.label}
+              </SectionHeading>
 
-        {/* --------------------------------------------------------- grades */}
-        <section>
+              <div style={{ display: 'grid', gap: 8 }}>
+                {shown.blocks.map((b) => (
+                  <ClassRow
+                    key={b.id}
+                    block={b}
+                    nowMinutes={nowMinutes}
+                    state={classState({
+                      block: b,
+                      nowMinutes,
+                      live: shown.live,
+                      nextId: next?.id ?? null,
+                    })}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
+          <section>
+            <SectionHeading
+              action={
+                <button
+                  onClick={() => navigate('work')}
+                  style={{ font: `600 12.5px ${fonts.sans}`, color: colors.accent }}
+                >
+                  All work
+                </button>
+              }
+            >
+              Due soon
+            </SectionHeading>
+
+            {!dueSoon.length ? (
+              <EmptyState
+                title="Clear for now"
+                body={`Nothing due in the next ${DUE_SOON_DAYS} days.`}
+                action={<PrimaryButton onClick={onAddAssignment}>Add an assignment</PrimaryButton>}
+              />
+            ) : (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {dueSoon.map(({ a, due }) => {
+                  const course = courseById.get(a.course_id);
+                  return (
+                    <Card
+                      key={a.id}
+                      as="button"
+                      onClick={() => navigate('work')}
+                      style={{
+                        padding: '12px 15px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 11,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <CourseDot color={course?.color} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                          style={{
+                            font: `600 13.5px ${fonts.sans}`,
+                            color: colors.ink,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {a.title}
+                        </div>
+                        <div
+                          style={{
+                            font: `500 11.5px ${fonts.sans}`,
+                            color: colors.muted2,
+                            marginTop: 2,
+                          }}
+                        >
+                          {course?.code || course?.name || 'No course'}
+                        </div>
+                      </div>
+                      <DuePill due={due} />
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        </div>
+
+        <section style={{ minWidth: 0 }}>
           <SectionHeading
             action={
               <button
@@ -205,10 +294,12 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment }) {
   );
 }
 
-function Greeting({ now }) {
+function Greeting({ now, phone }) {
   return (
-    <div style={{ marginBottom: 20 }}>
-      <div style={{ font: `400 27px ${fonts.serif}`, color: colors.ink }}>{greeting(now)}</div>
+    <div style={{ marginBottom: phone ? 14 : 20 }}>
+      <div style={{ font: `400 ${phone ? 24 : 27}px ${fonts.serif}`, color: colors.ink }}>
+        {greeting(now)}
+      </div>
       <div style={{ font: `500 13px ${fonts.sans}`, color: colors.muted2, marginTop: 4 }}>
         {longDate(now)}
       </div>
@@ -216,77 +307,93 @@ function Greeting({ now }) {
   );
 }
 
-// The one card worth putting above everything else: where you're supposed to be,
-// and how long you've got. A countdown is the only form of this that answers the
-// question without making you do subtraction.
-function NextUp({ current, next, nowMinutes, classesToday }) {
-  if (current) {
-    const c = courseColor(current.course.color);
-    const left = current.end - nowMinutes;
+// The card worth putting above everything else: where you're supposed to be and
+// how long you've got. The room is the largest thing on it after the course
+// name — this is the card you look at with the phone in one hand, already
+// walking, and "AIEB 244" is the part you don't know by heart in week one.
+function NextUp({ current, next, upcoming, nowMinutes, classesToday, phone }) {
+  const block = current ?? next ?? upcoming?.blocks?.[0] ?? null;
+
+  if (!block) {
     return (
-      <HeroCard color={c} label="In class now">
-        <div style={{ font: `400 24px ${fonts.serif}`, color: colors.ink }}>{current.course.name}</div>
+      <HeroCard color={{ solid: colors.accent, soft: colors.chipBg }} label="Classes">
+        <div style={{ font: `400 ${phone ? 21 : 24}px ${fonts.serif}`, color: colors.ink }}>
+          {classesToday ? "That's it for today" : 'Nothing scheduled'}
+        </div>
         <div style={{ font: `500 13px ${fonts.sans}`, color: colors.muted2, marginTop: 5 }}>
-          {fmtTimeRange(current.start, current.end)}
-          {current.course.location ? ` · ${current.course.location}` : ''} · {formatGap(left)} left
+          {classesToday
+            ? `${classesToday} class${classesToday === 1 ? '' : 'es'} already done.`
+            : 'No classes on the books this week.'}
         </div>
       </HeroCard>
     );
   }
 
-  if (next) {
-    const c = courseColor(next.course.color);
-    const until = next.start - nowMinutes;
-    return (
-      <HeroCard color={c} label="Next class">
-        <div style={{ font: `400 24px ${fonts.serif}`, color: colors.ink }}>{next.course.name}</div>
-        <div style={{ font: `500 13px ${fonts.sans}`, color: colors.muted2, marginTop: 5 }}>
-          {fmtMinutes(next.start)}
-          {next.course.location ? ` · ${next.course.location}` : ''} · in {formatGap(until)}
-        </div>
-      </HeroCard>
-    );
-  }
+  const c = courseColor(block.course.color);
+  const live = Boolean(current);
+  const label = live
+    ? 'In class now'
+    : next
+      ? `Next · in ${fmtDuration(block.start - nowMinutes)}`
+      : `Next class · ${upcoming.label}`;
 
   return (
-    <HeroCard color={{ solid: colors.accent, soft: colors.chipBg }} label="Classes">
-      <div style={{ font: `400 24px ${fonts.serif}`, color: colors.ink }}>
-        {classesToday ? "That's it for today" : 'Nothing scheduled today'}
+    <HeroCard color={c} label={label} room={block.course.location} phone={phone}>
+      <div
+        style={{
+          font: `400 ${phone ? 21 : 24}px ${fonts.serif}`,
+          color: colors.ink,
+          lineHeight: 1.2,
+        }}
+      >
+        {block.course.name}
       </div>
-      <div style={{ font: `500 13px ${fonts.sans}`, color: colors.muted2, marginTop: 5 }}>
-        {classesToday
-          ? `${classesToday} class${classesToday === 1 ? '' : 'es'} already done.`
-          : 'No classes meet today.'}
+      <div style={{ font: `500 13px ${fonts.sans}`, color: colors.muted2, marginTop: 6 }}>
+        <span style={{ color: c.solid, fontWeight: 600 }}>
+          {block.course.code || 'Class'}
+        </span>
+        {' · '}
+        {fmtTimeRange(block.start, block.end)}
+        {live ? ` · ${fmtDuration(block.end - nowMinutes)} left` : ''}
       </div>
     </HeroCard>
   );
 }
 
-function HeroCard({ color, label, children }) {
+function HeroCard({ color, label, room, children, phone }) {
   return (
-    <Card style={{ padding: '18px 20px', borderLeft: `4px solid ${color.solid}`, background: color.soft }}>
+    <Card
+      style={{
+        padding: phone ? '15px 16px' : '18px 20px',
+        borderLeft: `4px solid ${color.solid}`,
+        background: color.soft,
+      }}
+    >
       <div
         style={{
-          font: `600 11px ${fonts.sans}`,
-          color: color.solid,
-          textTransform: 'uppercase',
-          letterSpacing: '0.07em',
-          marginBottom: 7,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          marginBottom: 8,
         }}
       >
-        {label}
+        <span
+          style={{
+            font: `600 11px ${fonts.sans}`,
+            color: color.solid,
+            textTransform: 'uppercase',
+            letterSpacing: '0.07em',
+          }}
+        >
+          {label}
+        </span>
+        {room && (
+          <span style={{ marginLeft: 'auto' }}>
+            <RoomChip room={room} solid={color.solid} soft={colors.card} size={phone ? 14 : 15} />
+          </span>
+        )}
       </div>
       {children}
     </Card>
   );
-}
-
-// "in 1h 20m" reads faster than "in 80 minutes", and both beat a bare timestamp
-// when the question is whether you have time to get coffee.
-function formatGap(minutes) {
-  const m = Math.max(0, Math.round(minutes));
-  if (m < 60) return `${m} min`;
-  const h = Math.floor(m / 60);
-  const rest = m % 60;
-  return rest ? `${h}h ${rest}m` : `${h}h`;
 }

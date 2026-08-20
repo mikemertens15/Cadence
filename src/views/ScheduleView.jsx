@@ -5,6 +5,7 @@ import { useSemester } from '../data/SemesterProvider';
 import { useIsPhone } from '../useMediaQuery';
 import { useNow } from '../useNow';
 import { Card, SectionHeading, EmptyState } from '../components/ui';
+import { ClassRow, classState } from '../components/ClassRow';
 import { PrimaryButton } from '../components/Modal';
 
 // The week, two ways. A laptop gets the grid you'd draw on paper — seven
@@ -228,6 +229,8 @@ function DayAgenda({ blocks }) {
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
   const todays = blocks.filter((b) => b.day === day);
+  // Only a day that is actually today can have a 'next' class to count down to.
+  const nextId = day === today ? (todays.find((b) => b.start > nowMinutes)?.id ?? null) : null;
 
   return (
     <>
@@ -272,50 +275,29 @@ function DayAgenda({ blocks }) {
       {!todays.length ? (
         <EmptyState title="Nothing scheduled" body={`No classes on ${DAY_NAMES_LONG[day]}.`} />
       ) : (
-        <div style={{ display: 'grid', gap: 9 }}>
-          {todays.map((b) => {
-            const c = courseColor(b.course.color);
-            const over = day === today && nowMinutes > b.end;
-            const live = day === today && nowMinutes >= b.start && nowMinutes <= b.end;
-            return (
-              <Card
+        <>
+          <div
+            style={{
+              font: `500 12px ${fonts.sans}`,
+              color: colors.muted2,
+              margin: '0 2px 10px',
+            }}
+          >
+            {todays.length} class{todays.length === 1 ? '' : 'es'} ·{' '}
+            {fmtMinutes(todays[0].start)} – {fmtMinutes(todays[todays.length - 1].end)}
+          </div>
+
+          <div style={{ display: 'grid', gap: 8 }}>
+            {todays.map((b) => (
+              <ClassRow
                 key={b.id}
-                style={{
-                  padding: '13px 15px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 13,
-                  borderLeft: `4px solid ${c.solid}`,
-                  opacity: over ? 0.55 : 1,
-                  background: live ? c.soft : colors.card,
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ font: `600 14.5px ${fonts.sans}`, color: colors.ink }}>
-                    {b.course.name}
-                  </div>
-                  <div style={{ font: `500 12px ${fonts.sans}`, color: colors.muted2, marginTop: 3 }}>
-                    {fmtTimeRange(b.start, b.end)}
-                    {b.course.location ? ` · ${b.course.location}` : ''}
-                  </div>
-                </div>
-                {live && (
-                  <span
-                    style={{
-                      font: `600 10.5px ${fonts.sans}`,
-                      color: c.solid,
-                      background: colors.card,
-                      padding: '4px 9px',
-                      borderRadius: 20,
-                    }}
-                  >
-                    Now
-                  </span>
-                )}
-              </Card>
-            );
-          })}
-        </div>
+                block={b}
+                nowMinutes={nowMinutes}
+                state={classState({ block: b, nowMinutes, live: day === today, nextId })}
+              />
+            ))}
+          </div>
+        </>
       )}
     </>
   );

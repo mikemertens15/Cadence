@@ -1,6 +1,7 @@
 import { colors, fonts, shadows } from '../theme';
 import { NAV_ITEMS, navSection } from '../nav';
 import { Mark } from '../auth/SignIn';
+import { VersionChip } from './VersionChip';
 import { useSemester } from '../data/SemesterProvider';
 
 // Desktop chrome: brand, destinations, term switcher, and the one button that
@@ -31,13 +32,13 @@ export function TopNav({ view, setView, onAdd, onOpenSettings }) {
           gap: 18,
         }}
       >
-        <button
-          onClick={() => setView('today')}
-          style={{ display: 'flex', alignItems: 'center', gap: 9, flexShrink: 0 }}
-        >
-          <Mark size={24} />
-          <span style={{ font: `400 21px ${fonts.serif}`, color: colors.ink }}>Cadence</span>
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexShrink: 0 }}>
+          <button onClick={() => setView('today')} style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+            <Mark size={24} />
+            <span style={{ font: `400 21px ${fonts.serif}`, color: colors.ink }}>Cadence</span>
+          </button>
+          <VersionChip view={view} setView={setView} />
+        </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 8 }}>
           {NAV_ITEMS.map(([key, label]) => {

@@ -12,12 +12,14 @@ import { MobileNav } from './components/MobileNav';
 import { CourseModal } from './components/CourseModal';
 import { AssignmentModal } from './components/AssignmentModal';
 import { SettingsModal } from './components/SettingsModal';
+import { VersionChip } from './components/VersionChip';
 import { Onboarding } from './views/Onboarding';
 import { TodayView } from './views/TodayView';
 import { ScheduleView } from './views/ScheduleView';
 import { WorkView } from './views/WorkView';
 import { GradesView, CourseGradeView } from './views/GradesView';
 import { CoursesView } from './views/CoursesView';
+import { ReleasesView } from './views/ReleasesView';
 
 export default function App() {
   const { session, loading: authLoading, recovering } = useAuth();
@@ -87,6 +89,7 @@ function Shell() {
         >
           <Mark size={22} />
           <span style={{ font: `400 19px ${fonts.serif}`, color: colors.ink }}>Cadence</span>
+          <VersionChip view={route} setView={navigate} size={9} />
           <button
             onClick={() => setModal({ kind: 'settings', startOn: 'terms' })}
             aria-label="Settings"
@@ -168,6 +171,10 @@ function Shell() {
               onOpenCourse={() => navigate('courses')}
             />
           ))}
+
+        {/* Not a nav section — reached only from the version chip, so nothing
+            in the tab bar highlights while it's open. */}
+        {section === 'releases' && <ReleasesView />}
 
         {section === 'courses' && (
           <CoursesView

@@ -176,3 +176,13 @@ export function describeDue(dueAt, now = new Date()) {
   if (daysLeft < 7) return { date, daysLeft, type: 'soon', label: `${shortDay(date)} ${time}` };
   return { date, daysLeft, type: 'later', label: monthDay(date) };
 }
+
+// "1h 20m" reads faster than "80 minutes", and both beat a bare timestamp when
+// the question is whether there's time to get coffee before the next class.
+export function fmtDuration(minutes) {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest ? `${h}h ${rest}m` : `${h}h`;
+}

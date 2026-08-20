@@ -4,6 +4,7 @@ import { parseDay, monthDay } from '../dates';
 import { useTheme } from '../useTheme';
 import { useAuth } from '../auth/AuthProvider';
 import { useSemester } from '../data/SemesterProvider';
+import { BUILD } from '../data/releases';
 import { ModalShell, Field, Chip, inputStyle, PrimaryButton, GhostButton } from './Modal';
 
 // Everything that isn't day-to-day: which term you're looking at, how the app
@@ -211,8 +212,10 @@ export function SettingsModal({ onClose, phone, startOn = 'terms' }) {
             </button>
           </div>
 
-          <div style={{ font: `400 11px ${fonts.sans}`, color: colors.faint, marginTop: 22 }}>
-            Cadence {__APP_VERSION__} · {__APP_COMMIT__}
+          {/* Goes through BUILD rather than the raw defines so there's one
+              place that knows what to fall back to when they're absent. */}
+          <div style={{ font: `400 11px ${fonts.mono}`, color: colors.faint, marginTop: 22 }}>
+            Cadence v{BUILD.version} · {BUILD.commit}
           </div>
         </>
       )}

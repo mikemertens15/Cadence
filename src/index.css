@@ -198,3 +198,34 @@ select {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
+
+/* iOS Safari zooms the whole page when you focus an input whose text is under
+   16px, and it does not zoom back out afterwards — you're left panned into a
+   corner of a form. The app's inputs are sized for a dense desktop table, so on
+   a phone they all get bumped to the threshold.
+
+   This has to be !important: every input in the app is styled inline, and an
+   inline style beats a plain stylesheet rule. Sizes are set inline precisely so
+   that this one blunt override is the only place the phone rule lives, rather
+   than a `phone ?` ternary sprinkled through a dozen components. */
+@media (max-width: 639px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Tapping anything on iOS otherwise flashes a translucent grey box over it,
+   which reads as a rendering glitch on cards that already have their own
+   pressed appearance. */
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Stop iOS inflating body text when the phone is turned to landscape. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}

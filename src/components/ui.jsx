@@ -1,4 +1,5 @@
 import { colors, tone, fonts, courseColor } from '../theme';
+import { useIsPhone } from '../useMediaQuery';
 
 // Shared surfaces and small pieces of vocabulary. Anything that appears in more
 // than one view lives here so the app reads as one thing.
@@ -153,14 +154,24 @@ export function GradeBadge({ pct, letter, size = 30, muted = false }) {
 }
 
 export function EmptyState({ title, body, action }) {
+  // An empty state is an absence, and on a phone it shouldn't cost more screen
+  // than the content it stands in for — "nothing due" was taking 350px of an
+  // 812px screen and pushing the actual schedule below the fold.
+  const phone = useIsPhone();
   return (
-    <Card style={{ padding: '38px 26px', textAlign: 'center' }}>
-      <div style={{ font: `400 19px ${fonts.serif}`, color: colors.ink, marginBottom: 7 }}>
+    <Card style={{ padding: phone ? '22px 18px' : '38px 26px', textAlign: 'center' }}>
+      <div
+        style={{
+          font: `400 ${phone ? 17 : 19}px ${fonts.serif}`,
+          color: colors.ink,
+          marginBottom: 6,
+        }}
+      >
         {title}
       </div>
       <div
         style={{
-          font: `400 13.5px/1.55 ${fonts.sans}`,
+          font: `400 ${phone ? 12.5 : 13.5}px/1.5 ${fonts.sans}`,
           color: colors.muted2,
           maxWidth: 380,
           margin: '0 auto',
@@ -168,7 +179,7 @@ export function EmptyState({ title, body, action }) {
       >
         {body}
       </div>
-      {action && <div style={{ marginTop: 18 }}>{action}</div>}
+      {action && <div style={{ marginTop: phone ? 13 : 18 }}>{action}</div>}
     </Card>
   );
 }
