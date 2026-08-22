@@ -1,38 +1,40 @@
 import { useState, useMemo } from 'react';
 import { colors, fonts, courseColor } from '../theme';
-import { DAY_NAMES, DAY_NAMES_LONG, getWeek, toMinutes, fmtMinutes, fmtTimeRange, dowIndex } from '../dates';
+import { DAY_NAMES, DAY_NAMES_LONG, getWeek, fmtMinutes, fmtTimeRange, dowIndex, dayRangeLabel } from '../dates';
+import { kindLabel } from '../assignments';
 import { useSemester } from '../data/SemesterProvider';
+import { useSchedule } from '../data/schedule';
 import { useIsPhone } from '../useMediaQuery';
 import { useNow } from '../useNow';
 import { Card, SectionHeading, EmptyState } from '../components/ui';
-import { ClassRow, classState } from '../components/ClassRow';
+import { ClassRow, EventRow, BreakCard, classState } from '../components/ClassRow';
 import { PrimaryButton } from '../components/Modal';
 
 // The week, two ways. A laptop gets the grid you'd draw on paper — seven
 // columns, time running down — because the useful question there is "what does
 // my week look like". A phone gets one day at a time, because the useful
 // question there is "where am I supposed to be right now".
+//
+// Both are built per-date rather than per-weekday, because two of the things
+// drawn on them only exist on a date: an exam happens once, and a break cancels
+// a specific Thursday rather than all of them.
 
 const PX_PER_MIN = 1.05;
 
-export function ScheduleView({ onAddCourse }) {
-  const { meetings, courseById, courses } = useSemester();
+export function ScheduleView({ onAddCourse, onOpenAssignment }) {
+  const { courses } = useSemester();
+  const { blocksOn, hasAnything } = useSchedule();
   const phone = useIsPhone();
+  const now = useNow();
 
-  const blocks = useMemo(
-    () =>
-      meetings
-        .map((m) => ({
-          id: m.id,
-          day: m.day_of_week,
-          start: toMinutes(m.start_time),
-          end: toMinutes(m.end_time),
-          course: courseById.get(m.course_id),
-        }))
-        .filter((b) => b.course)
-        .sort((a, b) => a.start - b.start),
-    [meetings, courseById],
-  );
+  // The seven real dates in view, each already resolved to what's on it.
+  const week = useMemo(() => {
+    const w = getWeek(now);
+    return {
+      ...w,
+      days: w.days.map((d) => ({ ...d, ...blocksOn(d.date) })),
+    };
+  }, [now, blocksOn]);
 
   if (!courses.length) {
     return (
@@ -44,7 +46,7 @@ export function ScheduleView({ onAddCourse }) {
     );
   }
 
-  if (!blocks.length) {
+  if (!hasAnything) {
     return (
       <EmptyState
         title="Nothing meets yet"
@@ -53,25 +55,73 @@ export function ScheduleView({ onAddCourse }) {
     );
   }
 
-  return phone ? <DayAgenda blocks={blocks} /> : <WeekGrid blocks={blocks} />;
+  return phone ? (
+    <DayAgenda week={week} now={now} onOpenAssignment={onOpenAssignment} />
+  ) : (
+    <WeekGrid week={week} now={now} onOpenAssignment={onOpenAssignment} />
+  );
+}
+
+/**
+ * Lay overlapping blocks out side by side instead of on top of each other.
+ *
+ * This did not matter much when a day was only ever weekly classes, which by
+ * construction don't collide. Exams collide constantly — a midterm is very
+ * often scheduled *in* the class period it belongs to — and absolutely
+ * positioned blocks at the same coordinates simply hide one another, so the
+ * exam you most needed to see was the one that vanished under the lecture.
+ *
+ * Standard sweep: walk blocks in start order, keep a cluster of things that
+ * overlap, give each the lowest column not already taken by something still
+ * running, and once the cluster closes divide the width by how many columns it
+ * ended up needing. Every block in one cluster gets the same width, so a day
+ * reads as an aligned grid rather than a staircase.
+ */
+function packColumns(blocks) {
+  const sorted = [...blocks].sort((a, b) => a.start - b.start || a.end - b.end);
+  const out = [];
+  let cluster = [];
+  let clusterEnd = -Infinity;
+
+  const flush = () => {
+    if (!cluster.length) return;
+    const cols = Math.max(...cluster.map((b) => b.col)) + 1;
+    for (const b of cluster) out.push({ ...b, cols });
+    cluster = [];
+    clusterEnd = -Infinity;
+  };
+
+  for (const b of sorted) {
+    // A block starting after everything before it has finished begins a fresh
+    // cluster — nothing earlier can constrain its width.
+    if (b.start >= clusterEnd) flush();
+    const taken = new Set(cluster.filter((c) => c.end > b.start).map((c) => c.col));
+    let col = 0;
+    while (taken.has(col)) col += 1;
+    cluster.push({ ...b, col });
+    clusterEnd = Math.max(clusterEnd, b.end);
+  }
+  flush();
+  return out;
 }
 
 // ------------------------------------------------------------------ desktop
 
-function WeekGrid({ blocks }) {
-  const now = useNow();
-  const week = useMemo(() => getWeek(now), [now]);
+function WeekGrid({ week, now, onOpenAssignment }) {
+  const all = week.days.flatMap((d) => d.blocks);
 
   // Bound the grid to the day you actually have, rounded out to whole hours —
-  // a 9am–3pm schedule shouldn't render midnight to midnight.
-  const startHour = Math.floor(Math.min(...blocks.map((b) => b.start)) / 60);
-  const endHour = Math.ceil(Math.max(...blocks.map((b) => b.end)) / 60);
+  // a 9am–3pm schedule shouldn't render midnight to midnight. A week that is
+  // entirely break has nothing to measure, so fall back to a normal school day
+  // rather than collapsing to a zero-height grid.
+  const startHour = all.length ? Math.floor(Math.min(...all.map((b) => b.start)) / 60) : 8;
+  const endHour = all.length ? Math.ceil(Math.max(...all.map((b) => b.end)) / 60) : 17;
   const top = startHour * 60;
   const height = (endHour - startHour) * 60 * PX_PER_MIN;
 
-  // Weekend columns only appear when something meets on them, which for most
+  // Weekend columns only appear when something is on them, which for most
   // schedules gives the five weekdays more room.
-  const hasWeekend = blocks.some((b) => b.day >= 5);
+  const hasWeekend = week.days.some((d) => d.index >= 5 && (d.blocks.length || d.off));
   const days = week.days.slice(0, hasWeekend ? 7 : 5);
 
   const hours = [];
@@ -80,6 +130,10 @@ function WeekGrid({ blocks }) {
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
   const todayIndex = dowIndex(now);
   const nowVisible = nowMinutes >= top && nowMinutes <= endHour * 60 && todayIndex < days.length;
+
+  // Named once so the legend under the grid and the blocks themselves can't
+  // disagree about which weeks are off.
+  const offDays = days.filter((d) => d.off);
 
   return (
     <>
@@ -115,7 +169,7 @@ function WeekGrid({ blocks }) {
                     textAlign: 'center',
                     paddingBottom: 9,
                     font: `600 12px ${fonts.sans}`,
-                    color: isToday ? colors.accent : colors.muted2,
+                    color: isToday ? colors.accent : d.off ? colors.faint : colors.muted2,
                   }}
                 >
                   {d.dow}{' '}
@@ -146,6 +200,44 @@ function WeekGrid({ blocks }) {
                     />
                   ))}
 
+                  {/* A day off is drawn as an absence — hatched over the whole
+                      column, so the eye reads "nothing here" before it reads
+                      any label. */}
+                  {d.off && (
+                    <div
+                      title={d.off.name}
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        background: colors.chipBg,
+                        backgroundImage: `repeating-linear-gradient(45deg, ${colors.divider} 0 6px, transparent 6px 12px)`,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: 4,
+                        zIndex: 1,
+                      }}
+                    >
+                      <span
+                        style={{
+                          // Longhand throughout: React warns when a `font`
+                          // shorthand and a `lineHeight` are set on the same
+                          // element, because one silently resets the other.
+                          fontFamily: fonts.sans,
+                          fontSize: 10,
+                          fontWeight: 600,
+                          lineHeight: 1.3,
+                          color: colors.muted2,
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.06em',
+                          textAlign: 'center',
+                        }}
+                      >
+                        {d.off.name}
+                      </span>
+                    </div>
+                  )}
+
                   {nowVisible && isToday && (
                     <div
                       aria-hidden="true"
@@ -155,82 +247,109 @@ function WeekGrid({ blocks }) {
                         right: 0,
                         top: (nowMinutes - top) * PX_PER_MIN,
                         borderTop: `2px solid ${colors.accent}`,
-                        zIndex: 2,
+                        // Above every block, including exams — the one line
+                        // that must never be covered is where you are now.
+                        zIndex: 4,
                       }}
                     />
                   )}
 
-                  {blocks
-                    .filter((b) => b.day === d.index)
-                    .map((b) => {
-                      const c = courseColor(b.course.color);
-                      const blockHeight = Math.max(22, (b.end - b.start) * PX_PER_MIN - 3);
-                      return (
+                  {packColumns(d.blocks).map((b) => {
+                    const c = courseColor(b.course?.color);
+                    const event = b.type === 'event';
+                    const blockHeight = Math.max(22, (b.end - b.start) * PX_PER_MIN - 3);
+                    const width = 100 / b.cols;
+                    return (
+                      <div
+                        key={b.id}
+                        onClick={
+                          event && onOpenAssignment ? () => onOpenAssignment(b.assignment) : undefined
+                        }
+                        title={
+                          event
+                            ? `${kindLabel(b.event.kind)}: ${b.event.title} · ${fmtTimeRange(b.start, b.end)}`
+                            : `${b.course.name} · ${fmtTimeRange(b.start, b.end)}`
+                        }
+                        style={{
+                          position: 'absolute',
+                          left: `calc(${b.col * width}% + 3px)`,
+                          width: `calc(${width}% - 6px)`,
+                          top: (b.start - top) * PX_PER_MIN,
+                          height: blockHeight,
+                          // An exam gets the course colour filled in rather than
+                          // tinted: on a grid of six pastel blocks, the one you
+                          // must not miss should be the one that isn't pastel.
+                          background: event ? c.solid : c.soft,
+                          borderLeft: `3px solid ${c.solid}`,
+                          borderRadius: 7,
+                          padding: '5px 7px',
+                          overflow: 'hidden',
+                          zIndex: event ? 3 : 2,
+                          cursor: event && onOpenAssignment ? 'pointer' : 'default',
+                        }}
+                      >
                         <div
-                          key={b.id}
-                          title={`${b.course.name} · ${fmtTimeRange(b.start, b.end)}`}
                           style={{
-                            position: 'absolute',
-                            left: 3,
-                            right: 3,
-                            top: (b.start - top) * PX_PER_MIN,
-                            height: blockHeight,
-                            background: c.soft,
-                            borderLeft: `3px solid ${c.solid}`,
-                            borderRadius: 7,
-                            padding: '5px 7px',
+                            font: `600 11.5px ${fonts.sans}`,
+                            color: event ? colors.onAccent : c.solid,
+                            whiteSpace: 'nowrap',
                             overflow: 'hidden',
-                            zIndex: 1,
+                            textOverflow: 'ellipsis',
                           }}
                         >
+                          {event
+                            ? kindLabel(b.event.kind)
+                            : b.course.code || b.course.name}
+                        </div>
+                        {blockHeight > 38 && (
                           <div
                             style={{
-                              font: `600 11.5px ${fonts.sans}`,
-                              color: c.solid,
+                              font: `500 10.5px ${fonts.sans}`,
+                              color: event ? colors.onAccent : colors.muted2,
+                              marginTop: 2,
+                              opacity: event ? 0.85 : 1,
                               whiteSpace: 'nowrap',
                               overflow: 'hidden',
                               textOverflow: 'ellipsis',
                             }}
                           >
-                            {b.course.code || b.course.name}
+                            {event
+                              ? b.event.title
+                              : `${fmtMinutes(b.start)}${b.course.location ? ` · ${b.course.location}` : ''}`}
                           </div>
-                          {blockHeight > 38 && (
-                            <div
-                              style={{
-                                font: `500 10.5px ${fonts.sans}`,
-                                color: colors.muted2,
-                                marginTop: 2,
-                              }}
-                            >
-                              {fmtMinutes(b.start)}
-                              {b.course.location ? ` · ${b.course.location}` : ''}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             );
           })}
         </div>
       </Card>
+
+      {offDays.length > 0 && (
+        <div style={{ font: `500 12px ${fonts.sans}`, color: colors.muted2, marginTop: 10 }}>
+          {[...new Map(offDays.map((d) => [d.off.id, d.off])).values()]
+            .map((b) => `${b.name} · ${dayRangeLabel(b.start_date, b.end_date)}`)
+            .join('   ·   ')}
+        </div>
+      )}
     </>
   );
 }
 
 // ------------------------------------------------------------------- phone
 
-function DayAgenda({ blocks }) {
-  const now = useNow();
+function DayAgenda({ week, now, onOpenAssignment }) {
   const today = dowIndex(now);
   const [day, setDay] = useState(today);
-  const week = useMemo(() => getWeek(now), [now]);
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
-  const todays = blocks.filter((b) => b.day === day);
-  // Only a day that is actually today can have a 'next' class to count down to.
-  const nextId = day === today ? (todays.find((b) => b.start > nowMinutes)?.id ?? null) : null;
+  const shown = week.days[day];
+  // Only a day that is actually today can have a class in progress or a 'next'
+  // class to count down to.
+  const nextId = day === today ? (shown.blocks.find((b) => b.start > nowMinutes)?.id ?? null) : null;
 
   return (
     <>
@@ -239,7 +358,8 @@ function DayAgenda({ blocks }) {
       <div style={{ display: 'flex', gap: 5, marginBottom: 16 }}>
         {DAY_NAMES.map((d, i) => {
           const active = i === day;
-          const has = blocks.some((b) => b.day === i);
+          const dayData = week.days[i];
+          const has = dayData.blocks.length > 0;
           return (
             <button
               key={d}
@@ -253,10 +373,13 @@ function DayAgenda({ blocks }) {
                 border: `1px solid ${active ? colors.accent : colors.cardBorder}`,
                 color: active ? colors.onAccent : i === today ? colors.accent : colors.muted2,
                 font: `600 11.5px ${fonts.sans}`,
+                opacity: dayData.off && !active ? 0.6 : 1,
               }}
             >
               <div>{d[0]}</div>
               <div style={{ font: `500 10px ${fonts.sans}`, opacity: 0.85 }}>{week.days[i].num}</div>
+              {/* A day off gets a hollow marker rather than none at all: "no
+                  classes" and "nothing entered" look identical otherwise. */}
               <div
                 aria-hidden="true"
                 style={{
@@ -265,6 +388,7 @@ function DayAgenda({ blocks }) {
                   borderRadius: '50%',
                   margin: '3px auto 0',
                   background: has ? (active ? colors.onAccent : colors.faint) : 'transparent',
+                  border: !has && dayData.off ? `1px solid ${active ? colors.onAccent : colors.faint}` : 'none',
                 }}
               />
             </button>
@@ -272,33 +396,49 @@ function DayAgenda({ blocks }) {
         })}
       </div>
 
-      {!todays.length ? (
-        <EmptyState title="Nothing scheduled" body={`No classes on ${DAY_NAMES_LONG[day]}.`} />
-      ) : (
-        <>
-          <div
-            style={{
-              font: `500 12px ${fonts.sans}`,
-              color: colors.muted2,
-              margin: '0 2px 10px',
-            }}
-          >
-            {todays.length} class{todays.length === 1 ? '' : 'es'} ·{' '}
-            {fmtMinutes(todays[0].start)} – {fmtMinutes(todays[todays.length - 1].end)}
-          </div>
+      <div style={{ display: 'grid', gap: 8 }}>
+        {shown.off && (
+          <BreakCard
+            name={shown.off.name}
+            note={`No classes ${dayRangeLabel(shown.off.start_date, shown.off.end_date)}.`}
+          />
+        )}
 
-          <div style={{ display: 'grid', gap: 8 }}>
-            {todays.map((b) => (
-              <ClassRow
-                key={b.id}
-                block={b}
-                nowMinutes={nowMinutes}
-                state={classState({ block: b, nowMinutes, live: day === today, nextId })}
-              />
-            ))}
-          </div>
-        </>
-      )}
+        {!shown.blocks.length && !shown.off ? (
+          <EmptyState title="Nothing scheduled" body={`No classes on ${DAY_NAMES_LONG[day]}.`} />
+        ) : (
+          <>
+            {shown.blocks.length > 0 && (
+              <div
+                style={{
+                  font: `500 12px ${fonts.sans}`,
+                  color: colors.muted2,
+                  margin: '0 2px 2px',
+                }}
+              >
+                {shown.blocks.length} item{shown.blocks.length === 1 ? '' : 's'} ·{' '}
+                {fmtMinutes(shown.blocks[0].start)} –{' '}
+                {fmtMinutes(shown.blocks[shown.blocks.length - 1].end)}
+              </div>
+            )}
+
+            {shown.blocks.map((b) => {
+              const state = classState({ block: b, nowMinutes, live: day === today, nextId });
+              return b.type === 'event' ? (
+                <EventRow
+                  key={b.id}
+                  block={b}
+                  nowMinutes={nowMinutes}
+                  state={state}
+                  onOpen={onOpenAssignment ? () => onOpenAssignment(b.assignment) : undefined}
+                />
+              ) : (
+                <ClassRow key={b.id} block={b} nowMinutes={nowMinutes} state={state} />
+              );
+            })}
+          </>
+        )}
+      </div>
     </>
   );
 }

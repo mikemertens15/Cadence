@@ -10,11 +10,11 @@ import { dayStr } from '../dates';
 // assignments and the course's credit hours and its scale overrides, all at
 // once, and six hooks each opening their own subscription would spend most of
 // their time re-fetching each other's dependencies. Second, cumulative GPA is a
-// question about every term you've ever taken, so "load only the active term"
-// buys nothing — the whole table has to be here anyway.
+// question about every term you've ever taken — and, since 0.3, every term you
+// took before this app existed — so "load only the active term" buys nothing.
 //
 // The dataset is small enough to make that easy: six courses a term, a few
-// hundred assignments a year. It all arrives in six queries on sign-in.
+// hundred assignments a year. It all arrives in nine queries on sign-in.
 //
 // Rows travel in database shape (`points_possible`, not `pointsPossible`). The
 // grading engine reads them directly, and a translation layer in between would
@@ -31,6 +31,9 @@ const TABLES = [
   ['categories', 'grading_categories'],
   ['assignments', 'assignments'],
   ['scaleOverrides', 'grade_scale_overrides'],
+  ['priorTerms', 'prior_terms'],
+  ['degreePlans', 'degree_plan'],
+  ['breaks', 'term_breaks'],
 ];
 
 const EMPTY = {
@@ -40,6 +43,9 @@ const EMPTY = {
   categories: [],
   assignments: [],
   scaleOverrides: [],
+  priorTerms: [],
+  degreePlans: [],
+  breaks: [],
 };
 
 export function useSemester() {
@@ -65,6 +71,11 @@ export function SemesterProvider({ children }) {
   const [rows, setRows] = useState(EMPTY);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // Whether a read has ever come back clean for this user. The distinction
+  // between "you have no terms" and "we could not find out whether you have any
+  // terms" is the whole difference between showing someone their semester and
+  // showing them a first-run wizard over the top of it — see the gate in App.
+  const [loaded, setLoaded] = useState(false);
   const [termId, setTermIdState] = useState(() => {
     try {
       return localStorage.getItem(TERM_KEY);
@@ -76,15 +87,33 @@ export function SemesterProvider({ children }) {
   const fetchAll = useCallback(async () => {
     if (!userId) {
       setRows(EMPTY);
+      setLoaded(false);
       setLoading(false);
       return;
     }
+
     // RLS already scopes every one of these to this user; the queries don't
     // need a where clause and couldn't widen the result if they had one.
-    const results = await Promise.all(TABLES.map(([, table]) => supabase.from(table).select('*')));
+    let results;
+    try {
+      results = await Promise.all(TABLES.map(([, table]) => supabase.from(table).select('*')));
+    } catch (err) {
+      // supabase-js normally folds a dead connection into `error` rather than
+      // rejecting, but a phone waking up with no signal can throw before the
+      // request is even built, and an unhandled rejection here would leave the
+      // app stuck on the splash forever.
+      setError(err?.message || 'Could not reach Cadence.');
+      setLoading(false);
+      return;
+    }
 
     const failed = results.find((r) => r.error);
     if (failed) {
+      // Deliberately does *not* clear `rows`. A failed refresh on a phone coming
+      // out of a pocket is the common case, and blanking the dataset would turn
+      // a moment of no signal into an app that says you have no courses — which
+      // then routes to "create your first term". Keep what we had, say what went
+      // wrong, and let the next refetch heal it.
       setError(failed.error.message);
       setLoading(false);
       return;
@@ -92,6 +121,7 @@ export function SemesterProvider({ children }) {
 
     setError('');
     setRows(Object.fromEntries(TABLES.map(([key], i) => [key, results[i].data ?? []])));
+    setLoaded(true);
     setLoading(false);
   }, [userId]);
 
@@ -126,6 +156,32 @@ export function SemesterProvider({ children }) {
     return () => {
       clearTimeout(refetchTimer.current);
       supabase.removeChannel(channel);
+    };
+  }, [userId, fetchAll]);
+
+  // Re-read when the app comes back to the foreground, or when the network
+  // returns.
+  //
+  // This is what realtime cannot do for you. A phone that has been in a pocket
+  // since this morning had its websocket killed by the OS hours ago, and no
+  // amount of subscription will deliver what changed in the meantime — the
+  // socket comes back empty and confident. Every native app you trust re-reads
+  // on resume for exactly this reason, and it doubles as the recovery path for
+  // a load that failed while there was no signal.
+  useEffect(() => {
+    if (!userId) return;
+
+    const onResume = () => {
+      if (document.visibilityState === 'visible') fetchAll();
+    };
+    document.addEventListener('visibilitychange', onResume);
+    window.addEventListener('online', fetchAll);
+    window.addEventListener('focus', onResume);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onResume);
+      window.removeEventListener('online', fetchAll);
+      window.removeEventListener('focus', onResume);
     };
   }, [userId, fetchAll]);
 
@@ -194,6 +250,44 @@ export function SemesterProvider({ children }) {
   const meetings = useMemo(
     () => rows.meetings.filter((m) => courseIds.has(m.course_id)),
     [rows.meetings, courseIds],
+  );
+
+  // Past semesters, newest first. `position` is the hand-orderable field; the
+  // created-at fallback keeps rows added in one sitting in the order they were
+  // typed rather than shuffling on every refetch.
+  const priorTerms = useMemo(
+    () =>
+      [...rows.priorTerms].sort(
+        (a, b) => a.position - b.position || String(a.created_at).localeCompare(String(b.created_at)),
+      ),
+    [rows.priorTerms],
+  );
+
+  const priorCredits = useMemo(
+    () => priorTerms.reduce((t, p) => t + (Number(p.credit_hours) || 0), 0),
+    [priorTerms],
+  );
+
+  // One row per user, enforced by a unique constraint — so the list is either
+  // empty or a single element, and null means "never set up".
+  const degreePlan = rows.degreePlans[0] ?? null;
+
+  const breaks = useMemo(() => {
+    const list = activeTerm ? rows.breaks.filter((b) => b.term_id === activeTerm.id) : [];
+    return list.sort((a, b) => String(a.start_date).localeCompare(String(b.start_date)));
+  }, [rows.breaks, activeTerm]);
+
+  /**
+   * The break covering a given day, or null.
+   *
+   * Date columns arrive as 'YYYY-MM-DD' and that format sorts lexicographically,
+   * so a string comparison is the whole test — no parsing, and no chance of the
+   * timezone bug that eats the first or last day of a break when a date is
+   * parsed as UTC midnight and rendered somewhere west of it.
+   */
+  const breakOn = useCallback(
+    (day) => breaks.find((b) => b.start_date <= day && day <= b.end_date) ?? null,
+    [breaks],
   );
 
   // ------------------------------------------------------------- mutators
@@ -389,7 +483,7 @@ export function SemesterProvider({ children }) {
   );
 
   const createAssignment = useCallback(
-    ({ courseId, categoryId, title, dueAt, pointsPossible, notes }) =>
+    ({ courseId, categoryId, title, dueAt, pointsPossible, notes, kind, durationMin }) =>
       run(
         supabase
           .from('assignments')
@@ -400,6 +494,8 @@ export function SemesterProvider({ children }) {
             due_at: dueAt ?? null,
             points_possible: pointsPossible ?? 100,
             notes: notes?.trim() || null,
+            kind: kind ?? 'assignment',
+            duration_min: durationMin ?? null,
           })
           .select()
           .single(),
@@ -445,8 +541,105 @@ export function SemesterProvider({ children }) {
     [run, patchLocal],
   );
 
+  // ------------------------------------------------------ history & degree
+
+  const createPriorTerm = useCallback(
+    ({ name, creditHours, gpa }) =>
+      run(
+        supabase
+          .from('prior_terms')
+          .insert({
+            name: name.trim() || 'Earlier',
+            credit_hours: creditHours,
+            gpa,
+            position: rows.priorTerms.length,
+          })
+          .select()
+          .single(),
+      ),
+    [run, rows.priorTerms.length],
+  );
+
+  const updatePriorTerm = useCallback(
+    (id, patch) => {
+      patchLocal('priorTerms', id, patch);
+      return run(supabase.from('prior_terms').update(patch).eq('id', id));
+    },
+    [run, patchLocal],
+  );
+
+  const deletePriorTerm = useCallback(
+    (id) => {
+      dropLocal('priorTerms', id);
+      return run(supabase.from('prior_terms').delete().eq('id', id));
+    },
+    [run, dropLocal],
+  );
+
+  /**
+   * Save the degree goal.
+   *
+   * Upsert on user_id rather than "look it up, then insert or update": the
+   * unique constraint already says there is at most one, so letting Postgres
+   * decide which it is removes the race where two devices both find nothing and
+   * both insert.
+   */
+  const saveDegreePlan = useCallback(
+    ({ name, creditsRequired, gpaGoal }) =>
+      run(
+        supabase
+          .from('degree_plan')
+          .upsert(
+            {
+              user_id: userId,
+              name: name?.trim() || null,
+              credits_required: creditsRequired,
+              gpa_goal: gpaGoal ?? null,
+            },
+            { onConflict: 'user_id' },
+          )
+          .select()
+          .single(),
+      ),
+    [run, userId],
+  );
+
+  const createBreak = useCallback(
+    ({ termId: term, name, startDate, endDate }) =>
+      run(
+        supabase
+          .from('term_breaks')
+          .insert({
+            term_id: term,
+            name: name.trim() || 'Day off',
+            start_date: startDate,
+            end_date: endDate,
+          })
+          .select()
+          .single(),
+      ),
+    [run],
+  );
+
+  const updateBreak = useCallback(
+    (id, patch) => {
+      patchLocal('breaks', id, patch);
+      return run(supabase.from('term_breaks').update(patch).eq('id', id));
+    },
+    [run, patchLocal],
+  );
+
+  const deleteBreak = useCallback(
+    (id) => {
+      dropLocal('breaks', id);
+      return run(supabase.from('term_breaks').delete().eq('id', id));
+    },
+    [run, dropLocal],
+  );
+
   const value = {
     loading,
+    loaded,
     error,
     terms,
     activeTerm,
@@ -461,6 +654,11 @@ export function SemesterProvider({ children }) {
     categoriesByCourse,
     assignmentsByCourse,
     scaleByCourse,
+    priorTerms,
+    priorCredits,
+    degreePlan,
+    breaks,
+    breakOn,
     createTerm,
     updateTerm,
     deleteTerm,
@@ -474,6 +672,13 @@ export function SemesterProvider({ children }) {
     updateAssignment,
     deleteAssignment,
     setScore,
+    createPriorTerm,
+    updatePriorTerm,
+    deletePriorTerm,
+    saveDegreePlan,
+    createBreak,
+    updateBreak,
+    deleteBreak,
     refresh: fetchAll,
   };
 

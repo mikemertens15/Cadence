@@ -1,11 +1,12 @@
 import { useState, useMemo } from 'react';
 import { colors, tone, fonts, courseColor } from '../theme';
 import { describeDue } from '../dates';
+import { isEvent } from '../assignments';
 import { useSemester } from '../data/SemesterProvider';
 import { useIsPhone } from '../useMediaQuery';
 import { useNow } from '../useNow';
 import { isGraded } from '../grading/engine';
-import { Card, SectionHeading, EmptyState, DuePill, CourseDot, fmtPoints } from '../components/ui';
+import { Card, SectionHeading, EmptyState, DuePill, CourseDot, KindTag, fmtPoints } from '../components/ui';
 import { PrimaryButton, Chip } from '../components/Modal';
 import { ScoreInput } from '../components/AssignmentModal';
 
@@ -17,10 +18,15 @@ import { ScoreInput } from '../components/AssignmentModal';
 
 const BUCKETS = [
   ['overdue', 'Overdue', tone.red],
+  // Exams you've already sat. They are neither overdue nor done, and the only
+  // action available is to type in a score the moment it lands — which is
+  // exactly why they deserve a section instead of being scattered through
+  // "Overdue" in red, implying you failed to hand in a test you took.
+  ['past', 'Waiting on a grade', null],
   ['today', 'Today', null],
   ['soon', 'This week', null],
   ['later', 'Later', null],
-  ['none', 'No due date', null],
+  ['none', 'No date', null],
 ];
 
 export function WorkView({ onOpen, onAdd }) {
@@ -29,18 +35,24 @@ export function WorkView({ onOpen, onAdd }) {
   const now = useNow();
 
   const [courseFilter, setCourseFilter] = useState('all');
+  // 'all' | 'exams' | 'work'. Exam week is the one time you want the list to
+  // drop everything else, and "what do I still have to hand in" is the rest of
+  // the semester.
+  const [kindFilter, setKindFilter] = useState('all');
   const [showGraded, setShowGraded] = useState(false);
 
   const { groups, gradedCount } = useMemo(() => {
     const filtered = assignments.filter(
-      (a) => courseFilter === 'all' || a.course_id === courseFilter,
+      (a) =>
+        (courseFilter === 'all' || a.course_id === courseFilter) &&
+        (kindFilter === 'all' || (kindFilter === 'exams' ? isEvent(a.kind) : !isEvent(a.kind))),
     );
 
     const graded = filtered.filter((a) => isGraded(a));
     const open = filtered.filter((a) => !isGraded(a));
 
     const rows = (showGraded ? filtered : open)
-      .map((a) => ({ a, due: describeDue(a.due_at, now) }))
+      .map((a) => ({ a, due: describeDue(a.due_at, now, { event: isEvent(a.kind) }) }))
       // Undated work sorts last; everything else by when it's actually due.
       .sort((x, y) => {
         if (!x.due.date) return y.due.date ? 1 : 0;
@@ -57,7 +69,7 @@ export function WorkView({ onOpen, onAdd }) {
       map.get(key).push(row);
     }
     return { groups: map, gradedCount: graded.length };
-  }, [assignments, courseFilter, showGraded, now]);
+  }, [assignments, courseFilter, kindFilter, showGraded, now]);
 
   if (!courses.length) {
     return (
@@ -79,6 +91,18 @@ export function WorkView({ onOpen, onAdd }) {
       >
         Work
       </SectionHeading>
+
+      <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 10 }}>
+        <Chip active={kindFilter === 'all'} onClick={() => setKindFilter('all')}>
+          Everything
+        </Chip>
+        <Chip active={kindFilter === 'exams'} onClick={() => setKindFilter('exams')}>
+          Tests &amp; quizzes
+        </Chip>
+        <Chip active={kindFilter === 'work'} onClick={() => setKindFilter('work')}>
+          Assignments
+        </Chip>
+      </div>
 
       <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 18 }}>
         <Chip active={courseFilter === 'all'} onClick={() => setCourseFilter('all')}>
@@ -162,6 +186,7 @@ export function WorkView({ onOpen, onAdd }) {
 function AssignmentRow({ assignment: a, due, course, phone, onOpen, onScore, onToggleStatus }) {
   const graded = isGraded(a);
   const submitted = a.status === 'submitted';
+  const event = isEvent(a.kind);
   const c = courseColor(course?.color);
 
   return (
@@ -174,7 +199,24 @@ function AssignmentRow({ assignment: a, due, course, phone, onOpen, onScore, onT
       }}
     >
       {/* Turned-in marker. Deliberately separate from the score: handing work in
-          and getting it back are different events, often days apart. */}
+          and getting it back are different events, often days apart.
+          You don't hand in an exam, though — you either sat it or you haven't,
+          and the calendar already knows which. So an exam gets a marker that
+          reports rather than a control that lies about being actionable. */}
+      {event ? (
+        <span
+          aria-hidden="true"
+          style={{
+            width: 19,
+            height: 19,
+            borderRadius: 7,
+            flexShrink: 0,
+            background: graded ? colors.accent : due.type === 'past' ? c.solid : 'transparent',
+            border:
+              graded || due.type === 'past' ? 'none' : `2px dashed ${colors.inputBorder}`,
+          }}
+        />
+      ) : (
       <button
         onClick={onToggleStatus}
         aria-label={submitted ? 'Mark as not submitted' : 'Mark as submitted'}
@@ -204,6 +246,7 @@ function AssignmentRow({ assignment: a, due, course, phone, onOpen, onScore, onT
           />
         )}
       </button>
+      )}
 
       <button onClick={onOpen} style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
         <div
@@ -229,6 +272,7 @@ function AssignmentRow({ assignment: a, due, course, phone, onOpen, onScore, onT
         >
           <CourseDot color={course?.color} size={7} />
           <span style={{ color: c.solid }}>{course?.code || course?.name || 'No course'}</span>
+          <KindTag kind={a.kind} color={course?.color} />
           {!phone && a.points_possible > 0 && (
             <span style={{ color: colors.faint }}>· {fmtPoints(a.points_possible)} pts</span>
           )}

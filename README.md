@@ -2,10 +2,12 @@
 
 What class is next, what's due, and where your grade actually stands.
 
-A single-user PWA for running a semester: courses and their meeting times, an
-assignment list that sorts itself by what's coming, and a grading engine that
-answers the only two questions that change behaviour — *what happens if this
-next exam goes badly*, and *what do I need to still get an A*.
+A single-user PWA for running a semester: courses and their meeting times, the
+work and exams coming at you, and a grading engine that answers the only two
+questions that change behaviour — *what happens if this next exam goes badly*,
+and *what do I need to still get an A*. Plus the two questions a semester at a
+time can't answer on its own: what your GPA actually is, and how far through the
+degree you've got.
 
 Desktop is for setup and bulk entry; the phone is for the ten-second "log this
 score between classes" moment.
@@ -35,7 +37,9 @@ npm run dev
 
 Other scripts: `npm test` (grade math), `npm run lint`, `npm run build`.
 
-The schema lives in [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql).
+The schema lives in [`supabase/migrations/`](supabase/migrations/) — `0001_init.sql`
+for the core tables, `0002_exams_history_breaks.sql` for exams, past semesters,
+the degree goal and days off.
 Every table is behind RLS with one policy shape — `user_id = auth.uid()` — so
 the publishable key in the browser bundle can't reach anyone else's rows.
 
@@ -71,15 +75,78 @@ work are left out rather than counted as zero.
 `npm test` covers all of this with hand-computed expected values; each test
 carries the arithmetic in a comment above it.
 
+## Exams are not assignments
+
+A problem set is due *by* a moment — hand it in at 11:58pm and you're fine. A
+test happens *at* one: you sit in a room at 2pm for fifty minutes, and "late"
+isn't a state it can be in.
+
+That single difference is the whole of `assignments.kind`, and it decides four
+things: the date field says *when* rather than *due*, it defaults to a
+believable hour instead of midnight, the thing gets drawn on the schedule grid,
+and once it's behind you it files under "waiting on a grade" rather than sitting
+in Overdue in red implying you failed to hand in a test you turned up for.
+
+Everything else about the two is identical — both are worth points, both live in
+a weighted category, both feed the same grade — which is why it's a column and
+not a second table. See [`src/assignments.js`](src/assignments.js).
+
+## History, and the degree
+
+Cumulative GPA is a lie until the semesters before this app are in it, and
+re-entering four years of assignments is a thing nobody will do. It isn't
+needed: a finished semester is completely described by its credit hours and the
+GPA it earned, which is exactly what a registrar multiplies together. So
+`prior_terms` takes one row per past semester — or one lump row for everything
+before you started tracking. Both produce the identical cumulative GPA; the
+choice is only about how much detail you want back out.
+
+Degree progress is credits toward a total and deliberately nothing more.
+Whether a specific course satisfies a specific requirement needs a catalog to
+answer, changes by catalog year, and is wrong in ways a student can't check —
+DegreeWorks owns that problem, and being confidently wrong about it would be
+worse than not claiming to know. Credits are the part everyone can state from
+memory, and enough to draw a bar that moves twice a year. Banked credits and the
+ones you're currently sitting in are drawn as separate segments, because rolling
+them together would quietly inflate the number every January and August.
+
+## Days off
+
+Meeting rows are weekly and have no opinion about the calendar, so without
+`term_breaks` the app cheerfully tells you to be in Bruner 218 on Thanksgiving
+and counts down to a class nobody is going to.
+
+A break empties the recurring classes inside it and nothing else. Anything with
+a real date — an exam, a paper due Monday — still stands: professors schedule
+work over a long weekend all the time, and quietly hiding it would be the more
+expensive mistake of the two. Both the dashboard and the schedule go through
+[`src/data/schedule.js`](src/data/schedule.js), which is why they can't disagree
+about what's on a given day.
+
+## Loading, and the difference between empty and unknown
+
+An empty dataset and a failed read look identical from the UI, and conflating
+them is what put a first-run wizard in front of people who already had a
+semester in the app: a phone waking up without a signal read nothing, and
+"nothing" routed to "create your first term".
+
+So `SemesterProvider` tracks whether a read has ever come back clean, a failed
+read leaves the existing rows alone rather than blanking them, and the onboarding
+screen is reachable only after a read that actually succeeded. It also re-reads
+on foreground and on `online` — realtime can't help here, because a socket the
+OS killed while the phone was in a pocket comes back empty and confident.
+
 ## Layout
 
 ```
 src/
   grading/       engine.js (the math), scale.js (letters + grade points)
-  data/          SemesterProvider.jsx (all six tables), grades.js (engine ↔ app)
+  data/          SemesterProvider.jsx (all nine tables), grades.js (engine ↔ app),
+                 schedule.js (what's on a given date)
   auth/          Supabase session, sign-in, password reset
   views/         TodayView, ScheduleView, WorkView, GradesView, CoursesView
   components/    modals, nav, shared UI
+  assignments.js what kind of thing a piece of work is
   theme.js       tokens → CSS custom properties in index.css
 ```
 
@@ -87,19 +154,23 @@ Two deliberate departures from Tend worth knowing about:
 
 - **One data provider, not a hook per table.** Nothing here is independent — a
   grade needs categories, assignments, credit hours and scale overrides at once
-  — and cumulative GPA is a question about every term, so "load only the active
-  term" would buy nothing.
+  — and cumulative GPA is a question about every term you've ever taken, so
+  "load only the active term" would buy nothing.
 - **Rows travel in database shape** (`points_possible`, not `pointsPossible`).
   The engine reads them directly; a translation layer would only be somewhere
   for the two to drift apart.
 
 ## Not built yet
 
-Phase 3, deliberately left out:
-
 - CSV export of grades
 - Push notifications (in-app due-soon badges cover the MVP)
-- Calendar overlay of assignments onto the schedule grid
+- Offline editing. The service worker gets the shell open without a signal;
+  queuing writes and reconciling them against realtime is a much bigger promise
+  than this app needs to make.
+- Recurring breaks, and importing an academic calendar. Four dates typed once a
+  semester is not the problem worth solving next.
 
 Drop-lowest was specified as Phase 3 but is implemented — it's part of what
-makes the grade correct, so it belongs in the engine rather than bolted on.
+makes the grade correct, so it belongs in the engine rather than bolted on. The
+calendar overlay of dated work onto the schedule grid was also on this list and
+now exists, for exams — the kinds you actually have to be somewhere for.

@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useSemester } from './SemesterProvider';
-import { gradeCourse, neededOnRemaining, gpaFor } from '../grading/engine';
+import { dayStr } from '../dates';
+import { gradeCourse, neededOnRemaining, gpaFor, degreeProgress } from '../grading/engine';
 import { scaleFor } from '../grading/scale';
 
 // The seam between the pure grade math and the app's data. Everything here just
@@ -67,9 +68,14 @@ export function useTermGrades() {
  * typed in — mid-semester the honest answer to "what's my GPA" is "what it
  * would be if the term ended today", and that's the number worth watching.
  * Courses with no graded work yet are left out rather than counted as zero.
+ *
+ * Cumulative additionally carries the semesters that happened before this app
+ * did. Without them "cumulative" means "this one term", which for anyone past
+ * their freshman fall is not a number they'd recognise — and is exactly the
+ * number a bad midterm makes look catastrophic.
  */
 export function useGpa() {
-  const { allCourses, activeTerm, categoriesByCourse, assignmentsByCourse, scaleByCourse } =
+  const { allCourses, activeTerm, priorTerms, categoriesByCourse, assignmentsByCourse, scaleByCourse } =
     useSemester();
 
   return useMemo(() => {
@@ -82,9 +88,55 @@ export function useGpa() {
       return { termId: course.term_id, creditHours: course.credit_hours, letter: grade.letter };
     });
 
+    const priors = priorTerms.map((p) => ({ creditHours: p.credit_hours, gpa: p.gpa }));
+
     return {
       term: gpaFor(entries.filter((e) => e.termId === activeTerm?.id)),
-      cumulative: gpaFor(entries),
+      cumulative: gpaFor(entries, priors),
+      hasHistory: priors.length > 0,
     };
-  }, [allCourses, activeTerm, categoriesByCourse, assignmentsByCourse, scaleByCourse]);
+  }, [allCourses, activeTerm, priorTerms, categoriesByCourse, assignmentsByCourse, scaleByCourse]);
+}
+
+/**
+ * Where you are in the degree, in credits.
+ *
+ * A term's credits count as *earned* once it's over and as *in progress* while
+ * you're in it — decided by the term's own end date rather than by whether every
+ * course in it has a grade, because a term ends on a date and a straggling
+ * professor shouldn't move the bar. Terms that haven't started are left out of
+ * both: credits you've registered for are not credits you're carrying.
+ */
+export function useDegreeProgress() {
+  const { terms, allCourses, degreePlan, priorCredits } = useSemester();
+
+  return useMemo(() => {
+    const today = dayStr();
+
+    const creditsByTerm = new Map();
+    for (const c of allCourses) {
+      creditsByTerm.set(c.term_id, (creditsByTerm.get(c.term_id) ?? 0) + (Number(c.credit_hours) || 0));
+    }
+
+    let doneCredits = 0;
+    let inProgressCredits = 0;
+    for (const t of terms) {
+      const credits = creditsByTerm.get(t.id) ?? 0;
+      if (t.end_date < today) doneCredits += credits;
+      else if (t.start_date <= today) inProgressCredits += credits;
+    }
+
+    return {
+      ...degreeProgress({
+        creditsRequired: degreePlan?.credits_required ?? 120,
+        priorCredits,
+        doneCredits,
+        inProgressCredits,
+      }),
+      // Null until someone opens Settings and says what they're working toward.
+      // The UI uses this to decide between an invitation and a progress bar.
+      plan: degreePlan,
+      configured: Boolean(degreePlan),
+    };
+  }, [terms, allCourses, degreePlan, priorCredits]);
 }

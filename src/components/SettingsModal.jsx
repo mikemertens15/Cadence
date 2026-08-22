@@ -6,10 +6,14 @@ import { useAuth } from '../auth/AuthProvider';
 import { useSemester } from '../data/SemesterProvider';
 import { BUILD } from '../data/releases';
 import { ModalShell, Field, Chip, inputStyle, PrimaryButton, GhostButton } from './Modal';
+import { BreaksPanel } from './BreaksPanel';
+import { DegreePanel } from './DegreePanel';
 
-// Everything that isn't day-to-day: which term you're looking at, how the app
-// looks, and the account behind it. One modal rather than a settings tab —
-// none of it is visited often enough to earn a permanent slot in the nav.
+// Everything that isn't day-to-day: which term you're looking at and the days
+// off inside it, the degree it all adds up to, how the app looks, and the
+// account behind it. One modal rather than a settings tab — none of it is
+// visited often enough to earn a permanent slot in the nav, and four tabs of
+// once-a-semester setup would be four tabs you scroll past every day.
 export function SettingsModal({ onClose, phone, startOn = 'terms' }) {
   const { mode, setMode } = useTheme();
   const { session, setPassword, signOut } = useAuth();
@@ -60,9 +64,12 @@ export function SettingsModal({ onClose, phone, startOn = 'terms' }) {
       phone={phone}
       footer={<GhostButton onClick={onClose} style={{ marginLeft: 'auto' }}>Done</GhostButton>}
     >
-      <div style={{ display: 'flex', gap: 7, marginBottom: 20 }}>
+      <div style={{ display: 'flex', gap: 7, marginBottom: 20, flexWrap: 'wrap' }}>
         <Chip active={tab === 'terms'} onClick={() => setTab('terms')}>
           Terms
+        </Chip>
+        <Chip active={tab === 'degree'} onClick={() => setTab('degree')}>
+          Degree
         </Chip>
         <Chip active={tab === 'look'} onClick={() => setTab('look')}>
           Appearance
@@ -151,8 +158,20 @@ export function SettingsModal({ onClose, phone, startOn = 'terms' }) {
               + New term
             </button>
           )}
+
+          {/* Scoped to the term in view rather than listing every term's
+              breaks: Thanksgiving belongs to one semester, and a flat list
+              across four years would need a column just to say which. */}
+          {activeTerm && (
+            <>
+              <div style={{ height: 1, background: colors.divider, margin: '22px 0 16px' }} />
+              <BreaksPanel term={activeTerm} />
+            </>
+          )}
         </>
       )}
+
+      {tab === 'degree' && <DegreePanel />}
 
       {tab === 'look' && (
         <Field label="Theme" hint="System follows your phone or laptop">

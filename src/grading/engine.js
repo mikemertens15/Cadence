@@ -311,11 +311,23 @@ export function neededOnRemaining(
 // ------------------------------------------------------------------ GPA
 
 /**
- * Weighted GPA across courses. Each entry is { creditHours, letter }; courses
- * with no letter yet (no graded work) are skipped rather than counted as zero,
- * and reported back as `ungraded` so the UI can say what the number is missing.
+ * Weighted GPA across courses.
+ *
+ * Each entry is { creditHours, letter }; courses with no letter yet (no graded
+ * work) are skipped rather than counted as zero, and reported back as `ungraded`
+ * so the UI can say what the number is missing.
+ *
+ * `priors` are semesters that happened before this app did — { creditHours, gpa }
+ * straight off a transcript. They enter the same weighted average as everything
+ * else, because that is exactly what a registrar does: quality points over
+ * attempted hours, no matter which term they came from. Without them a
+ * "cumulative" GPA built from one tracked semester is not cumulative at all, and
+ * a sophomore's real 3.2 would read as whatever this term happens to be doing.
+ *
+ * They're kept separate in the return value rather than folded in silently, so
+ * the UI can show its work — "3.31 over 74 credits, 45 of them from before".
  */
-export function gpaFor(entries = []) {
+export function gpaFor(entries = [], priors = []) {
   let points = 0;
   let credits = 0;
   let counted = 0;
@@ -333,10 +345,100 @@ export function gpaFor(entries = []) {
     counted += 1;
   }
 
+  const live = { gpa: credits > 0 ? points / credits : null, credits, counted };
+
+  let priorPoints = 0;
+  let priorCredits = 0;
+  for (const p of priors) {
+    const hours = num(p.creditHours) ?? 0;
+    const gpa = num(p.gpa);
+    // A zero-credit line carries no weight and a missing GPA has nothing to
+    // weight, so neither can move the average — skipping beats contributing 0.
+    if (gpa == null || hours <= 0) continue;
+    priorPoints += gpa * hours;
+    priorCredits += hours;
+  }
+
+  const totalPoints = points + priorPoints;
+  const totalCredits = credits + priorCredits;
+
   return {
-    gpa: credits > 0 ? points / credits : null,
-    credits,
+    gpa: totalCredits > 0 ? totalPoints / totalCredits : null,
+    credits: totalCredits,
     counted,
     ungraded,
+    priorCredits,
+    // What the tracked semesters alone say, which is the honest answer to "how
+    // is it going *now*" once history is in the mix and barely moves.
+    live,
+  };
+}
+
+// -------------------------------------------------------------- the degree
+
+// A typical full-time load, used only to turn "42 credits left" into "about
+// three more semesters". Stated once here rather than inline so the assumption
+// behind that sentence is findable.
+export const TYPICAL_LOAD = 15;
+
+/**
+ * How far through a degree you are, in credits.
+ *
+ * Deliberately a credit count and nothing else. A real audit asks whether *this*
+ * course satisfies *that* requirement, which needs a catalog, changes by
+ * catalog year, and is wrong in ways a student can't check — DegreeWorks exists
+ * and this isn't it. Credits toward a total is the part everyone already knows
+ * off the top of their head, and it's enough to draw a bar that moves twice a
+ * year.
+ *
+ * The three-way split is the point. Credits you've banked are yours; credits
+ * you're sitting in right now are not, and rolling them together would quietly
+ * inflate the number every January and August. `pctWithInProgress` is where the
+ * bar reaches if this term finishes — the motivating number, kept visibly
+ * separate from the earned one.
+ */
+export function degreeProgress({
+  creditsRequired = 120,
+  priorCredits = 0,
+  doneCredits = 0,
+  inProgressCredits = 0,
+} = {}) {
+  const required = Math.max(0, num(creditsRequired) ?? 0);
+  const prior = Math.max(0, num(priorCredits) ?? 0);
+  const done = Math.max(0, num(doneCredits) ?? 0);
+  const inProgress = Math.max(0, num(inProgressCredits) ?? 0);
+
+  const earned = prior + done;
+  const projected = earned + inProgress;
+  const remaining = Math.max(0, required - projected);
+
+  const pct = required > 0 ? Math.min(100, (earned / required) * 100) : null;
+  const pctWithInProgress = required > 0 ? Math.min(100, (projected / required) * 100) : null;
+
+  // Estimated from what you're actually carrying this term when there is one —
+  // a 12-credit student shouldn't be told they'll finish on someone else's
+  // schedule. Rounded up, because two-and-a-bit semesters is three semesters.
+  const load = inProgress > 0 ? inProgress : TYPICAL_LOAD;
+  const semestersLeft = remaining > 0 ? Math.ceil(remaining / load) : 0;
+
+  return {
+    required,
+    prior,
+    done,
+    earned,
+    inProgress,
+    projected,
+    remaining,
+    pct,
+    pctWithInProgress,
+    semestersLeft,
+    // The bar has three segments and they have to add to the whole, so the
+    // widths are computed here rather than three times in the markup.
+    share: required > 0
+      ? {
+          earned: Math.min(100, (earned / required) * 100),
+          inProgress: Math.min(100 - Math.min(100, (earned / required) * 100), (inProgress / required) * 100),
+        }
+      : { earned: 0, inProgress: 0 },
   };
 }

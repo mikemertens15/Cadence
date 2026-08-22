@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { colors, tone, fonts, courseColor } from '../theme';
 import { describeDue } from '../dates';
+import { isEvent } from '../assignments';
 import { useSemester } from '../data/SemesterProvider';
 import { useCourseGrade, useTermGrades, useGpa, EMPTY_OVERRIDES } from '../data/grades';
 import { useIsPhone } from '../useMediaQuery';
@@ -16,15 +17,17 @@ import {
   fmtPoints,
   fmtCredits,
   fmtGpa,
+  KindTag,
 } from '../components/ui';
 import { PrimaryButton, GhostButton, Chip, inputStyle } from '../components/Modal';
+import { DegreeProgress } from '../components/DegreeProgress';
 import { ScoreInput } from '../components/AssignmentModal';
 
 // Where the app earns its keep. The list answers "how am I doing"; the detail
 // answers the two questions that actually change behaviour — "what happens if
 // this next exam goes badly" and "what do I need to still get an A".
 
-export function GradesView({ onOpenCourse, onAddCourse, navigate }) {
+export function GradesView({ onOpenCourse, onAddCourse, onOpenDegree, navigate }) {
   const termGrades = useTermGrades();
   const gpa = useGpa();
   const phone = useIsPhone();
@@ -88,6 +91,10 @@ export function GradesView({ onOpenCourse, onAddCourse, navigate }) {
 
       <GpaPanel gpa={gpa} phone={phone} />
 
+      <div style={{ marginTop: 26 }}>
+        <DegreeProgress onSetUp={onOpenDegree} />
+      </div>
+
       <div style={{ marginTop: 18 }}>
         <GhostButton onClick={onOpenCourse}>Manage courses</GhostButton>
       </div>
@@ -123,7 +130,11 @@ function GpaPanel({ gpa, phone }) {
         {tile(
           'Cumulative',
           gpa.cumulative,
-          gpa.cumulative.credits ? `${fmtCredits(gpa.cumulative.credits)} credits counted` : 'Across every term',
+          gpa.cumulative.priorCredits
+            ? `${fmtCredits(gpa.cumulative.credits)} credits, ${fmtCredits(gpa.cumulative.priorCredits)} from before`
+            : gpa.cumulative.credits
+              ? `${fmtCredits(gpa.cumulative.credits)} credits counted`
+              : 'Across every term',
         )}
       </div>
       {/* A GPA computed from courses that aren't finished is a projection, and
@@ -133,6 +144,15 @@ function GpaPanel({ gpa, phone }) {
         {gpa.cumulative.ungraded > 0 &&
           ` ${gpa.cumulative.ungraded} course${gpa.cumulative.ungraded === 1 ? '' : 's'} with no graded work yet ${gpa.cumulative.ungraded === 1 ? 'is' : 'are'} left out.`}
       </div>
+      {/* Until history is in, "cumulative" is a word this app has not earned —
+          it means one semester, and for anyone past their first that is a
+          number they would not recognise as theirs. */}
+      {!gpa.hasHistory && (
+        <div style={{ font: `400 11.5px/1.5 ${fonts.sans}`, color: colors.faint, marginTop: 5 }}>
+          Cumulative only covers terms tracked here. Add the semesters that came before it under
+          Settings &rarr; Degree and it becomes your real one.
+        </div>
+      )}
     </>
   );
 }
@@ -566,7 +586,11 @@ function Assignments({ grade, whatIf, setWhatIf, clearWhatIf, simulating, onScor
 function AssignmentScoreRow({ assignment: a, first, dropped, whatIf, setWhatIf, onScore, onOpen, phone }) {
   const graded = isGraded(a);
   const possible = Number(a.points_possible) || 0;
-  const due = describeDue(a.due_at);
+  // Graded work borrows the event dialect, which never says "late". Once a
+  // score is in, whether the thing was handed in past its deadline is history
+  // the gradebook has already priced in — "6d late" beside a 46/50 reads as an
+  // outstanding problem rather than a date.
+  const due = describeDue(a.due_at, undefined, { event: isEvent(a.kind) || graded });
 
   return (
     <div
@@ -580,17 +604,20 @@ function AssignmentScoreRow({ assignment: a, first, dropped, whatIf, setWhatIf, 
       }}
     >
       <button onClick={() => onOpen(a)} style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
-        <div
-          style={{
-            font: `600 13.5px ${fonts.sans}`,
-            color: colors.ink,
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            textDecoration: dropped ? 'line-through' : 'none',
-          }}
-        >
-          {a.title}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          <span
+            style={{
+              font: `600 13.5px ${fonts.sans}`,
+              color: colors.ink,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              textDecoration: dropped ? 'line-through' : 'none',
+            }}
+          >
+            {a.title}
+          </span>
+          <KindTag kind={a.kind} />
         </div>
         <div style={{ font: `400 11px ${fonts.sans}`, color: colors.faint, marginTop: 2 }}>
           {dropped ? 'Dropped — lowest score' : due.type === 'none' ? 'No due date' : due.label}

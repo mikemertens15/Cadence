@@ -8,6 +8,45 @@
 
 export const RELEASES = [
   {
+    version: '0.3.0',
+    date: '2026-08-21',
+    name: 'The rest of the semester',
+    notes: [
+      [
+        'fixed',
+        'Opening Cadence on a phone could drop you into "Start with a term", as though the semester you had already built was gone. It never was. A read that failed \u2014 which on a phone means the half-second between waking up and finding a signal \u2014 left the app holding an empty dataset, and an empty dataset is indistinguishable from a new account. It now knows the difference between having no courses and not having been able to find out, and says which one happened.',
+      ],
+      [
+        'added',
+        'Tests, quizzes and finals, which are not assignments with a due date. A problem set is due *by* eleven fifty-nine; a midterm happens *at* two, for fifty minutes, in a room. So an exam asks when rather than when it\u2019s due, defaults to a believable hour instead of midnight, and gets drawn on your schedule alongside the classes \u2014 which is where you were going to look for it anyway.',
+      ],
+      [
+        'fixed',
+        'An exam you had already sat used to sit in Overdue, in red, as though you\u2019d failed to hand in a test you turned up for and finished. Those now have their own section \u2014 waiting on a grade \u2014 with the score box ready for the moment it lands.',
+      ],
+      [
+        'added',
+        'Breaks and days off. Meeting times repeat weekly and have no opinion about the calendar, so until now the app cheerfully told you to be in Bruner 218 on Thanksgiving and counted down to a class nobody was going to. Put the four dates off the academic calendar in once and the whole term behaves: those days empty out, the week grid hatches them over, and "next class" skips to the day you actually go back. Anything with a real date on it still stands, because professors schedule work over a long weekend constantly.',
+      ],
+      [
+        'added',
+        'The semesters before this one. Cumulative GPA meant "this one term", which for anyone past their first is not a number they\u2019d recognise as theirs \u2014 and it made one rough midterm look like a catastrophe. Enter the credit hours and GPA from your transcript, either semester by semester or as a single line for the lot, and the cumulative number becomes your real one. It is the same arithmetic a registrar does, so both ways give the identical answer.',
+      ],
+      [
+        'added',
+        'Degree progress. Say how many credits you need and it draws where you are \u2014 banked credits solid, this term hatched on the end \u2014 with the next thing worth reaching for spelled out underneath: the term you cross halfway, or how many semesters are left at the load you\u2019re actually carrying. Deliberately credits rather than a requirement audit; DegreeWorks needs a catalog to be right about whether a specific course counts, and being confidently wrong about that is worse than not claiming to know.',
+      ],
+      [
+        'fixed',
+        'Two things at the same hour used to be drawn on top of each other in the week grid, so one of them simply vanished. Classes rarely collide; exams collide constantly, because a midterm is usually scheduled in the period it belongs to \u2014 the exam was reliably the one that disappeared. Overlapping blocks now share the column.',
+      ],
+      [
+        'changed',
+        'Cadence re-reads your data when you come back to it, and when the network returns. A phone that has been in a pocket since this morning had its live connection killed by the OS hours ago; the socket comes back empty and confident, and the score you logged on your laptop at lunch was nowhere.',
+      ],
+    ],
+  },
+  {
     version: '0.2.0',
     date: '2026-08-20',
     name: 'Out the door',

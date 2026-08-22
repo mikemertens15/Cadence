@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { colors, fonts, courseColor } from '../theme';
-import { dayStr, addDays, endOfDay, toLocalInput, fromLocalInput } from '../dates';
+import { dayStr, addDays, endOfDay, atTime, toLocalInput, fromLocalInput } from '../dates';
+import { KINDS, DEFAULT_KIND, isEvent, kindLabel, DEFAULT_EVENT_MINUTES } from '../assignments';
 import { useSemester } from '../data/SemesterProvider';
 import {
   ModalShell,
@@ -21,6 +22,12 @@ import {
 // title is the only required field, and everything optional collapses behind
 // "More". Category and points can be filled in later from the grades table,
 // which is where they actually matter.
+//
+// The kind picker sits second because it changes the rest of the form. A
+// problem set is due *by* 11:59pm; a midterm happens *at* 2pm for fifty
+// minutes. Same row in the database, but "Due" over a date field is the wrong
+// word on an exam, and defaulting an exam to midnight is the wrong time — so
+// the label, the quick-pick chips and the default hour all follow from it.
 
 const REMEMBERED_COURSE = 'cadence.lastCourse';
 
@@ -47,8 +54,12 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
       '',
   );
   const [title, setTitle] = useState(assignment?.title ?? '');
+  const [kind, setKind] = useState(assignment?.kind ?? DEFAULT_KIND);
   const [due, setDue] = useState(() =>
     assignment ? toLocalInput(assignment.due_at) : toLocalInput(endOfDay(dayStr())),
+  );
+  const [duration, setDuration] = useState(
+    String(assignment?.duration_min ?? DEFAULT_EVENT_MINUTES),
   );
   const [categoryId, setCategoryId] = useState(assignment?.category_id ?? '');
   const [points, setPoints] = useState(String(assignment?.points_possible ?? 100));
@@ -58,11 +69,34 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const cats = categoriesByCourse.get(courseId) ?? [];
+  const event = isEvent(kind);
   const canSave = title.trim() && courseId && !busy;
 
   // Quick date chips beat a calendar for the three dates that cover almost
-  // everything, and they land on 11:59pm, which is when work is actually due.
-  const setDay = (offset) => setDue(toLocalInput(endOfDay(addDays(dayStr(), offset))));
+  // everything. Work lands on 11:59pm, which is when work is actually due; an
+  // exam lands at 9am, because nobody sits a final at midnight and an hour you
+  // have to clear is worse than one you have to confirm.
+  const setDay = (offset) => {
+    const day = addDays(dayStr(), offset);
+    setDue(toLocalInput(event ? atTime(day, 9, 0) : endOfDay(day)));
+  };
+
+  /**
+   * Switching kind re-times the date, but only the part of it nobody chose.
+   *
+   * Picking "Final" on a row still sitting at the untouched 11:59pm should move
+   * to a believable exam hour; picking it on a row where someone already typed
+   * 2:00pm should leave that alone. The test is whether the current time is
+   * exactly one of the two defaults — anything else is a deliberate answer.
+   */
+  const changeKind = (next) => {
+    setKind(next);
+    if (!due) return;
+    const [day, time] = due.split('T');
+    const nowEvent = isEvent(next);
+    if (time === '23:59' && nowEvent) setDue(toLocalInput(atTime(day, 9, 0)));
+    else if (time === '09:00' && !nowEvent) setDue(toLocalInput(endOfDay(day)));
+  };
 
   async function save() {
     if (!canSave) return;
@@ -74,6 +108,11 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
       category_id: categoryId || null,
       points_possible: Number(points) || 0,
       notes: notes.trim() || null,
+      kind,
+      // Only the kinds drawn on a schedule have a length. Clearing it on the
+      // others means switching a mistyped "Final" back to "Assignment" doesn't
+      // leave a stray fifty minutes on a row nothing will ever read it from.
+      duration_min: event ? Number(duration) || DEFAULT_EVENT_MINUTES : null,
     };
 
     if (editing) {
@@ -91,6 +130,8 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
         dueAt: fields.due_at,
         pointsPossible: fields.points_possible,
         notes: fields.notes,
+        kind: fields.kind,
+        durationMin: fields.duration_min,
       });
     }
 
@@ -107,7 +148,7 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
 
   return (
     <ModalShell
-      title={editing ? 'Edit assignment' : 'New assignment'}
+      title={editing ? `Edit ${kindLabel(kind).toLowerCase()}` : `New ${kindLabel(kind).toLowerCase()}`}
       onClose={onClose}
       phone={phone}
       footer={
@@ -131,12 +172,22 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
           autoFocus
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          placeholder="Problem Set 4"
+          placeholder={event ? 'Exam 2' : 'Problem Set 4'}
           style={input}
           onKeyDown={(e) => {
             if (e.key === 'Enter') save();
           }}
         />
+      </Field>
+
+      <Field label="Kind">
+        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+          {KINDS.map(([key, label]) => (
+            <Chip key={key} active={kind === key} onClick={() => changeKind(key)}>
+              {label}
+            </Chip>
+          ))}
+        </div>
       </Field>
 
       <Field label="Course">
@@ -170,19 +221,40 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
         </div>
       </Field>
 
-      <Field label="Due">
+      <Field
+        label={event ? 'When is it?' : 'Due'}
+        hint={event ? 'goes on your schedule' : undefined}
+      >
         <div style={{ display: 'flex', gap: 7, marginBottom: 9, flexWrap: 'wrap' }}>
           <Chip onClick={() => setDay(0)}>Today</Chip>
           <Chip onClick={() => setDay(1)}>Tomorrow</Chip>
           <Chip onClick={() => setDay(7)}>Next week</Chip>
           <Chip onClick={() => setDue('')}>No date</Chip>
         </div>
-        <input
-          type="datetime-local"
-          value={due}
-          onChange={(e) => setDue(e.target.value)}
-          style={input}
-        />
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="datetime-local"
+            value={due}
+            onChange={(e) => setDue(e.target.value)}
+            style={{ ...input, flex: 1, minWidth: 0 }}
+          />
+          {/* Only an event has a length, and only because the schedule has to
+              draw it as a block of some height. */}
+          {event && (
+            <>
+              <input
+                type="number"
+                min="5"
+                step="5"
+                value={duration}
+                onChange={(e) => setDuration(e.target.value)}
+                aria-label="How long it lasts, in minutes"
+                style={{ ...input, width: 74, textAlign: 'right' }}
+              />
+              <span style={{ font: `500 12px ${fonts.sans}`, color: colors.muted2 }}>min</span>
+            </>
+          )}
+        </div>
       </Field>
 
       {!expanded ? (

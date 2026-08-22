@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { gradeCourse, neededOnRemaining, gpaFor } from '../src/grading/engine.js';
+import { gradeCourse, neededOnRemaining, gpaFor, degreeProgress } from '../src/grading/engine.js';
 import { letterFor, gradePoints, PLUS_MINUS_SCALE, scaleFor } from '../src/grading/scale.js';
 
 // The grade is the one number in this app that a person will make decisions on:
@@ -351,4 +351,112 @@ test('courses with no grade yet are left out of GPA, not counted as zero', () =>
   close(r.gpa, 4);
   assert.equal(r.credits, 3);
   assert.equal(r.ungraded, 1);
+});
+
+// ------------------------------------------------- prior semesters
+
+test('prior semesters join the same weighted average', () => {
+  // Tracked: one 3-credit A = 12 quality points over 3 credits.
+  // Prior:   45 credits at 3.2 = 144 quality points.
+  // Together: 156 / 48 = 3.25
+  const g = gpaFor([{ creditHours: 3, letter: 'A' }], [{ creditHours: 45, gpa: 3.2 }]);
+  close(g.gpa, 3.25);
+  close(g.credits, 48);
+  close(g.priorCredits, 45);
+});
+
+test('the tracked-only GPA survives alongside the combined one', () => {
+  // The whole point of keeping `live` separate: this term is a 4.0 even though
+  // the cumulative it feeds is dragged to 2.4 by what came before.
+  const g = gpaFor([{ creditHours: 3, letter: 'A' }], [{ creditHours: 12, gpa: 2.0 }]);
+  close(g.live.gpa, 4);
+  close(g.live.credits, 3);
+  close(g.gpa, (12 + 24) / 15);
+});
+
+test('a lump prior row and its per-semester breakdown give the same GPA', () => {
+  // 15 cr at 3.0 (45 pts) + 15 cr at 3.6 (54 pts) = 99 / 30 = 3.3, which is
+  // exactly one 30-credit row at 3.3. This is the promise the settings panel
+  // makes when it says "one row or many, it comes out the same".
+  const split = gpaFor([], [
+    { creditHours: 15, gpa: 3.0 },
+    { creditHours: 15, gpa: 3.6 },
+  ]);
+  const lump = gpaFor([], [{ creditHours: 30, gpa: 3.3 }]);
+  close(split.gpa, 3.3);
+  close(lump.gpa, 3.3);
+});
+
+test('prior rows with no credits or no GPA cannot move the average', () => {
+  const g = gpaFor([{ creditHours: 3, letter: 'B' }], [
+    { creditHours: 0, gpa: 4 },
+    { creditHours: 10, gpa: null },
+  ]);
+  close(g.gpa, 3);
+  close(g.priorCredits, 0);
+});
+
+test('with no tracked courses the cumulative GPA is the transcript', () => {
+  const g = gpaFor([], [{ creditHours: 62, gpa: 3.47 }]);
+  close(g.gpa, 3.47);
+  assert.equal(g.counted, 0);
+});
+
+// ------------------------------------------------------ degree progress
+
+test('degree progress separates banked credits from this term', () => {
+  // 45 prior + 15 finished = 60 earned of 128 = 46.875%
+  // plus 16 in progress → 76 projected = 59.375%
+  const d = degreeProgress({
+    creditsRequired: 128,
+    priorCredits: 45,
+    doneCredits: 15,
+    inProgressCredits: 16,
+  });
+  close(d.earned, 60);
+  close(d.projected, 76);
+  close(d.pct, 46.875);
+  close(d.pctWithInProgress, 59.375);
+  close(d.remaining, 52);
+});
+
+test('semesters left is estimated from the load you are actually carrying', () => {
+  // 40 credits left at the 12 you're taking = 3.33… → 4 semesters, rounded up
+  // because two-and-a-bit semesters is three.
+  const light = degreeProgress({
+    creditsRequired: 100,
+    priorCredits: 48,
+    doneCredits: 0,
+    inProgressCredits: 12,
+  });
+  assert.equal(light.remaining, 40);
+  assert.equal(light.semestersLeft, 4);
+
+  // With nothing in progress there's no personal load to read, so it falls back
+  // to a normal one: 40 / 15 → 3.
+  const idle = degreeProgress({ creditsRequired: 100, priorCredits: 60, doneCredits: 0 });
+  assert.equal(idle.semestersLeft, 3);
+});
+
+test('a finished degree has nothing remaining and no semesters left', () => {
+  const d = degreeProgress({ creditsRequired: 120, priorCredits: 120 });
+  close(d.pct, 100);
+  assert.equal(d.remaining, 0);
+  assert.equal(d.semestersLeft, 0);
+});
+
+test('overshooting the requirement caps the bar rather than passing 100%', () => {
+  // Extra credits are real and worth counting in `earned`, but a bar that fills
+  // past its own track is a rendering bug, not a triumph.
+  const d = degreeProgress({ creditsRequired: 120, priorCredits: 132 });
+  close(d.earned, 132);
+  close(d.pct, 100);
+  close(d.share.earned, 100);
+  close(d.share.inProgress, 0);
+});
+
+test('the two bar segments never sum past the whole', () => {
+  // 110 earned of 120 leaves room for 10; a 16-credit term must not draw 16.
+  const d = degreeProgress({ creditsRequired: 120, priorCredits: 110, inProgressCredits: 16 });
+  assert.ok(d.share.earned + d.share.inProgress <= 100 + 1e-9);
 });

@@ -23,7 +23,7 @@ import { ReleasesView } from './views/ReleasesView';
 
 export default function App() {
   const { session, loading: authLoading, recovering } = useAuth();
-  const { loading: dataLoading, terms } = useSemester();
+  const { loading: dataLoading, loaded, terms } = useSemester();
 
   // Keeps the theme following the OS for as long as the app is open, not just
   // while the settings modal happens to be mounted.
@@ -35,6 +35,16 @@ export default function App() {
   if (recovering && session) return <ResetPassword />;
   if (!session) return <SignIn />;
   if (dataLoading) return <Splash />;
+
+  // `loaded` rather than `terms.length`, and the order matters.
+  //
+  // A read that failed leaves the dataset empty, and "empty" and "no terms yet"
+  // are indistinguishable from here — so a phone that opened with no signal used
+  // to sail past a real semester into the first-run wizard and offer to create a
+  // term or sign out. Onboarding is now only reachable after a read that
+  // actually came back, which makes "you have nothing" a fact we checked rather
+  // than a guess we made while offline.
+  if (!loaded) return <CantLoad />;
   if (!terms.length) return <Onboarding />;
   return <Shell />;
 }
@@ -136,11 +146,15 @@ function Shell() {
             navigate={navigate}
             onAddCourse={() => setModal({ kind: 'course' })}
             onAddAssignment={() => setModal({ kind: 'assignment' })}
+            onOpenAssignment={(assignment) => setModal({ kind: 'assignment', assignment })}
           />
         )}
 
         {section === 'schedule' && (
-          <ScheduleView onAddCourse={() => setModal({ kind: 'course' })} />
+          <ScheduleView
+            onAddCourse={() => setModal({ kind: 'course' })}
+            onOpenAssignment={(assignment) => setModal({ kind: 'assignment', assignment })}
+          />
         )}
 
         {section === 'work' && (
@@ -169,6 +183,7 @@ function Shell() {
               navigate={navigate}
               onAddCourse={() => setModal({ kind: 'course' })}
               onOpenCourse={() => navigate('courses')}
+              onOpenDegree={() => setModal({ kind: 'settings', startOn: 'degree' })}
             />
           ))}
 
@@ -201,6 +216,70 @@ function Shell() {
       {modal?.kind === 'settings' && (
         <SettingsModal onClose={close} phone={phone} startOn={modal.startOn} />
       )}
+    </div>
+  );
+}
+
+/**
+ * A first load that didn't come back.
+ *
+ * Deliberately says what went wrong and offers the two things that fix it,
+ * rather than the old behaviour of assuming an empty database and offering to
+ * build a semester on top of one that already exists. Retry is first because
+ * the cause is almost always a phone that woke up before its network did — the
+ * provider also re-reads on its own the moment the tab becomes visible or the
+ * connection returns, so this screen usually clears itself.
+ */
+function CantLoad() {
+  const { error, refresh } = useSemester();
+  const { signOut } = useAuth();
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        background: colors.bg,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 14,
+        padding: 28,
+        textAlign: 'center',
+      }}
+    >
+      <Mark size={26} />
+      <div style={{ font: `400 22px ${fonts.serif}`, color: colors.ink }}>
+        Couldn&rsquo;t load your semester
+      </div>
+      <div style={{ font: `400 13.5px/1.55 ${fonts.sans}`, color: colors.muted2, maxWidth: 340 }}>
+        {error || 'No answer from the server. This is usually a connection that hasn\u2019t come back yet.'}
+      </div>
+      <button
+        onClick={async () => {
+          setBusy(true);
+          await refresh();
+          setBusy(false);
+        }}
+        disabled={busy}
+        style={{
+          padding: '11px 22px',
+          borderRadius: 22,
+          background: colors.accent,
+          color: colors.onAccent,
+          font: `600 13px ${fonts.sans}`,
+          opacity: busy ? 0.55 : 1,
+        }}
+      >
+        {busy ? 'Trying…' : 'Try again'}
+      </button>
+      <button
+        onClick={signOut}
+        style={{ font: `600 12.5px ${fonts.sans}`, color: colors.muted, marginTop: 2 }}
+      >
+        Sign out
+      </button>
     </div>
   );
 }

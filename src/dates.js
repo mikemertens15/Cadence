@@ -150,15 +150,32 @@ export function endOfDay(dayString) {
   return d.toISOString();
 }
 
-// How an assignment's due date reads in a list. Everything downstream — the
+// A given hour on a given day, as an instant. The exam counterpart to
+// endOfDay: work is due at the end of a day, but a test happens partway
+// through one, and 9am is the hour most of them start.
+export function atTime(dayString, hour, minute = 0) {
+  const d = parseDay(dayString);
+  if (!d) return null;
+  d.setHours(hour, minute, 0, 0);
+  return d.toISOString();
+}
+
+// How a piece of work's date reads in a list. Everything downstream — the
 // colour of the pill, which bucket it sorts into — is derived from this one
 // function, so a row can never show "Tomorrow" in an "Overdue" group.
-export function describeDue(dueAt, now = new Date()) {
-  if (!dueAt) return { date: null, daysLeft: null, type: 'none', label: 'No due date' };
+//
+// `event` flips the meaning of "past". Something due by 11:59pm and not handed
+// in is overdue and wants a red pill. A test you sat on Tuesday is not overdue
+// — it's done, and what you're waiting on is the score. Calling that "3d late"
+// would be both wrong and, on the morning of a bad week, quietly demoralising.
+export function describeDue(dueAt, now = new Date(), { event = false } = {}) {
+  if (!dueAt) {
+    return { date: null, daysLeft: null, type: 'none', label: event ? 'No date set' : 'No due date' };
+  }
 
   const date = new Date(dueAt);
   if (Number.isNaN(date.getTime())) {
-    return { date: null, daysLeft: null, type: 'none', label: 'No due date' };
+    return { date: null, daysLeft: null, type: 'none', label: event ? 'No date set' : 'No due date' };
   }
 
   const daysLeft = daysUntil(date, now);
@@ -167,6 +184,11 @@ export function describeDue(dueAt, now = new Date()) {
   // Past the actual moment, not just the calendar day: something due at 5pm is
   // late at 5:01pm, and calling it "Today" until midnight would be a lie.
   if (date < now) {
+    if (event) {
+      const label =
+        daysLeft === 0 ? 'Earlier today' : daysLeft === -1 ? 'Yesterday' : `${-daysLeft}d ago`;
+      return { date, daysLeft, type: 'past', label };
+    }
     const label =
       daysLeft === 0 ? `Late — was ${time}` : daysLeft === -1 ? 'Yesterday' : `${-daysLeft}d late`;
     return { date, daysLeft, type: 'overdue', label };
@@ -176,6 +198,27 @@ export function describeDue(dueAt, now = new Date()) {
   if (daysLeft < 7) return { date, daysLeft, type: 'soon', label: `${shortDay(date)} ${time}` };
   return { date, daysLeft, type: 'later', label: monthDay(date) };
 }
+
+// ------------------------------------------------------------- date ranges
+
+// A break as it reads on a settings row: "Nov 26" for one day off, "Nov 24 – 28"
+// within a month, "Nov 30 – Dec 4" across one.
+export function dayRangeLabel(startDay, endDay) {
+  const a = parseDay(startDay);
+  const b = parseDay(endDay);
+  if (!a || !b) return '';
+  if (startDay === endDay) return monthDay(a);
+  if (a.getMonth() === b.getMonth()) return `${monthDay(a)} – ${b.getDate()}`;
+  return `${monthDay(a)} – ${monthDay(b)}`;
+}
+
+// Whole days a range covers, inclusive of both ends — "4 days off" on a break row.
+export const dayRangeLength = (startDay, endDay) => {
+  const a = parseDay(startDay);
+  const b = parseDay(endDay);
+  if (!a || !b) return 0;
+  return Math.max(0, Math.round((b - a) / 86400000) + 1);
+};
 
 // "1h 20m" reads faster than "80 minutes", and both beat a bare timestamp when
 // the question is whether there's time to get coffee before the next class.

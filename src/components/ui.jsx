@@ -1,4 +1,5 @@
 import { colors, tone, fonts, courseColor } from '../theme';
+import { kindOf, DEFAULT_KIND } from '../assignments';
 import { useIsPhone } from '../useMediaQuery';
 
 // Shared surfaces and small pieces of vocabulary. Anything that appears in more
@@ -96,6 +97,10 @@ export function DuePill({ due, done }) {
 
   if (done) return <span style={style('transparent', tone.green)}>Graded</span>;
   if (due.type === 'overdue') return <span style={style(tone.red, '#fff')}>{due.label}</span>;
+  // An exam you've already taken. Not late, not done — the ball is in the
+  // professor's court, and a red pill would say the opposite. "Taken" rather
+  // than "Sat", which next to a date reads as Saturday.
+  if (due.type === 'past') return <span style={style(colors.chipBg, tone.blue)}>Taken · {due.label}</span>;
   if (due.type === 'today') return <span style={style(colors.selected, colors.ink)}>{due.label}</span>;
   if (due.type === 'none') return <span style={style(colors.chipBg, colors.muted)}>No date</span>;
   return <span style={style(colors.chipBg, colors.muted2)}>{due.label}</span>;
@@ -150,6 +155,64 @@ export function GradeBadge({ pct, letter, size = 30, muted = false }) {
         </span>
       )}
     </span>
+  );
+}
+
+// What kind of thing a row is, when that isn't obvious from the title. Shown
+// only for the kinds that behave differently — an "Assignment" tag on an
+// assignment is a word that earns nothing, and a list where every row carries a
+// badge is a list where none of them are read.
+export function KindTag({ kind, color }) {
+  const k = kindOf(kind);
+  if (k.key === DEFAULT_KIND) return null;
+  const c = courseColor(color);
+  return (
+    <span
+      style={{
+        font: `600 10px ${fonts.sans}`,
+        letterSpacing: '0.05em',
+        textTransform: 'uppercase',
+        color: k.event ? c.solid : colors.muted,
+        background: k.event ? c.soft : colors.chipBg,
+        padding: '3px 7px',
+        borderRadius: 6,
+        flexShrink: 0,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {k.label}
+    </span>
+  );
+}
+
+// A bar in two parts: what's banked, and what this term adds to it. They're
+// drawn as separate segments rather than one blended total because the
+// difference between "I have 60 credits" and "I will have 76 if this term goes
+// through" is the whole reason to look at it.
+export function SegmentBar({ share, height = 10, fill = colors.accent, soft = colors.selected }) {
+  return (
+    <div style={{ height, borderRadius: 6, background: colors.track, overflow: 'hidden', display: 'flex' }}>
+      <div
+        style={{
+          width: `${Math.max(0, Math.min(100, share.earned))}%`,
+          background: fill,
+          transition: 'width 260ms ease',
+        }}
+      />
+      {/* Hatched rather than a flat lighter shade, so "not yours yet" reads as
+          provisional even to someone who can't tell the two tints apart. The
+          opacity lives on the element because `fill` is a CSS custom property —
+          there is no alpha to append to `var(--c-accent)`. */}
+      <div
+        style={{
+          width: `${Math.max(0, Math.min(100, share.inProgress))}%`,
+          background: soft,
+          backgroundImage: `repeating-linear-gradient(45deg, ${fill} 0 3px, transparent 3px 7px)`,
+          opacity: 0.5,
+          transition: 'width 260ms ease',
+        }}
+      />
+    </div>
   );
 }
 

@@ -4,13 +4,15 @@ import {
   greeting,
   longDate,
   describeDue,
-  toMinutes,
   fmtTimeRange,
   fmtDuration,
-  dowIndex,
   DAY_NAMES_LONG,
+  dowIndex,
+  dayRangeLabel,
 } from '../dates';
+import { isEvent, kindLabel } from '../assignments';
 import { useSemester } from '../data/SemesterProvider';
+import { useSchedule } from '../data/schedule';
 import { useTermGrades } from '../data/grades';
 import { useIsPhone } from '../useMediaQuery';
 import { useNow } from '../useNow';
@@ -23,8 +25,9 @@ import {
   CourseDot,
   GradeBadge,
   ProgressBar,
+  KindTag,
 } from '../components/ui';
-import { ClassRow, RoomChip, classState } from '../components/ClassRow';
+import { ClassRow, EventRow, BreakCard, RoomChip, classState } from '../components/ClassRow';
 import { PrimaryButton } from '../components/Modal';
 
 // The landing screen answers three questions in the order they get asked:
@@ -38,57 +41,49 @@ import { PrimaryButton } from '../components/Modal';
 
 const DUE_SOON_DAYS = 5;
 
-export function TodayView({ navigate, onAddCourse, onAddAssignment }) {
-  const { courses, meetings, assignments, courseById } = useSemester();
+export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssignment }) {
+  const { courses, assignments, courseById } = useSemester();
   const termGrades = useTermGrades();
   const phone = useIsPhone();
   const now = useNow();
 
-  const today = dowIndex(now);
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
-  const blocksFor = useMemo(() => {
-    const byDay = new Map();
-    for (const m of meetings) {
-      const course = courseById.get(m.course_id);
-      if (!course) continue;
-      const list = byDay.get(m.day_of_week) ?? [];
-      list.push({
-        id: m.id,
-        day: m.day_of_week,
-        start: toMinutes(m.start_time),
-        end: toMinutes(m.end_time),
-        course,
-      });
-      byDay.set(m.day_of_week, list);
-    }
-    for (const list of byDay.values()) list.sort((a, b) => a.start - b.start);
-    return byDay;
-  }, [meetings, courseById]);
+  const { blocksOn } = useSchedule();
 
-  const todaysClasses = blocksFor.get(today) ?? [];
-  const current = todaysClasses.find((b) => nowMinutes >= b.start && nowMinutes <= b.end);
-  const next = todaysClasses.find((b) => b.start > nowMinutes);
+  // Today, as a date rather than a weekday — a break is a range on the calendar
+  // and can only be checked against a real day.
+  const today = useMemo(() => blocksOn(now), [blocksOn, now]);
 
-  // Nothing left today (a Sunday, or 4pm on a Friday) shouldn't be a dead end —
-  // the useful answer then is when you're next due somewhere. Scans forward a
-  // week so a Sunday evening check shows Monday morning.
+  const current = today.blocks.find((b) => nowMinutes >= b.start && nowMinutes <= b.end);
+  const next = today.blocks.find((b) => b.start > nowMinutes);
+
+  // Nothing left today (a Sunday, a break, or 4pm on a Friday) shouldn't be a
+  // dead end — the useful answer then is when you're next due somewhere. Scans
+  // forward a week, skipping the days a break has emptied, so a Wednesday during
+  // Thanksgiving points at the Monday you actually go back.
   const upcoming = useMemo(() => {
     if (current || next) return null;
-    for (let i = 1; i <= 7; i++) {
-      const day = (today + i) % 7;
-      const list = blocksFor.get(day);
-      if (list?.length) {
-        return { day, offset: i, blocks: list, label: i === 1 ? 'Tomorrow' : DAY_NAMES_LONG[day] };
+    for (let i = 1; i <= 8; i++) {
+      const date = new Date(now);
+      date.setDate(now.getDate() + i);
+      const { blocks } = blocksOn(date);
+      if (blocks.length) {
+        return {
+          date,
+          offset: i,
+          blocks,
+          label: i === 1 ? 'Tomorrow' : DAY_NAMES_LONG[dowIndex(date)],
+        };
       }
     }
     return null;
-  }, [current, next, today, blocksFor]);
+  }, [current, next, now, blocksOn]);
 
-  // The day the list below shows: today while it still has classes ahead of it,
+  // The day the list below shows: today while it still has anything on it,
   // otherwise the next day that does.
-  const shown = todaysClasses.length
-    ? { blocks: todaysClasses, label: 'Today', live: true }
+  const shown = today.blocks.length
+    ? { blocks: today.blocks, label: 'Today', live: true }
     : upcoming
       ? { blocks: upcoming.blocks, label: upcoming.label, live: false }
       : null;
@@ -97,11 +92,27 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment }) {
     () =>
       assignments
         .filter((a) => !isGraded(a) && a.due_at)
-        .map((a) => ({ a, due: describeDue(a.due_at, now) }))
+        .map((a) => ({ a, due: describeDue(a.due_at, now, { event: isEvent(a.kind) }) }))
         .filter((r) => r.due.daysLeft != null && r.due.daysLeft <= DUE_SOON_DAYS)
+        // An exam you already sat isn't "coming up" — it's on the work list
+        // waiting for a score, and repeating it here would be the app nagging
+        // about something you can't do anything about.
+        .filter((r) => r.due.type !== 'past')
         .sort((x, y) => x.due.date - y.due.date),
     [assignments, now],
   );
+
+  // The next exam, however far out, because "when is the next test" is a
+  // different question from "what's due this week" and the answer is worth
+  // seeing before it lands inside the five-day window.
+  const nextExam = useMemo(() => {
+    const rows = assignments
+      .filter((a) => isEvent(a.kind) && a.due_at && !isGraded(a))
+      .map((a) => ({ a, due: describeDue(a.due_at, now, { event: true }) }))
+      .filter((r) => r.due.date && r.due.type !== 'past')
+      .sort((x, y) => x.due.date - y.due.date);
+    return rows[0] ?? null;
+  }, [assignments, now]);
 
   if (!courses.length) {
     return (
@@ -124,10 +135,17 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment }) {
         current={current}
         next={next}
         upcoming={upcoming}
+        off={today.off}
         nowMinutes={nowMinutes}
-        classesToday={todaysClasses.length}
+        blocksToday={today.blocks.length}
         phone={phone}
       />
+
+      {/* Only worth its space once it's genuinely ahead of you and not already
+          the thing filling the card above. */}
+      {nextExam && nextExam.a.id !== current?.event?.id && nextExam.a.id !== next?.event?.id && (
+        <NextExam row={nextExam} course={courseById.get(nextExam.a.course_id)} onOpen={onOpenAssignment} />
+      )}
 
       <div
         style={{
@@ -139,7 +157,11 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment }) {
         }}
       >
         <div style={{ display: 'grid', gap: 24, minWidth: 0 }}>
-          {shown && (
+          {/* One panel, whichever day it's about. On a break it stays on today
+              and says why the day is empty — jumping the heading straight to
+              "Monday" would answer a question nobody asked and hide the one
+              they did. */}
+          {(today.off || shown) && (
             <section>
               <SectionHeading
                 action={
@@ -151,24 +173,44 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment }) {
                   </button>
                 }
               >
-                {shown.label === 'Today' ? "Today's classes" : shown.label}
+                {today.off ? 'Today' : shown.label === 'Today' ? 'On today' : shown.label}
               </SectionHeading>
 
               <div style={{ display: 'grid', gap: 8 }}>
-                {shown.blocks.map((b) => (
-                  <ClassRow
-                    key={b.id}
-                    block={b}
-                    nowMinutes={nowMinutes}
-                    state={classState({
-                      block: b,
-                      nowMinutes,
-                      live: shown.live,
-                      nextId: next?.id ?? null,
-                    })}
+                {today.off && (
+                  <BreakCard
+                    name={today.off.name}
+                    note={`No classes ${dayRangeLabel(today.off.start_date, today.off.end_date)}.`}
                   />
-                ))}
+                )}
+                {(today.off ? today.blocks : shown.blocks).map((b) => {
+                  const state = classState({
+                    block: b,
+                    nowMinutes,
+                    live: today.off ? true : shown.live,
+                    nextId: next?.id ?? null,
+                  });
+                  return b.type === 'event' ? (
+                    <EventRow
+                      key={b.id}
+                      block={b}
+                      nowMinutes={nowMinutes}
+                      state={state}
+                      onOpen={onOpenAssignment ? () => onOpenAssignment(b.assignment) : undefined}
+                    />
+                  ) : (
+                    <ClassRow key={b.id} block={b} nowMinutes={nowMinutes} state={state} />
+                  );
+                })}
               </div>
+
+              {/* A break with genuinely nothing on it still has one useful
+                  thing to say, which is when it ends. */}
+              {today.off && !today.blocks.length && upcoming && (
+                <div style={{ font: `500 12px ${fonts.sans}`, color: colors.muted2, marginTop: 10, textAlign: 'center' }}>
+                  Back to it {upcoming.label.toLowerCase()}.
+                </div>
+              )}
             </section>
           )}
 
@@ -311,34 +353,42 @@ function Greeting({ now, phone }) {
 // how long you've got. The room is the largest thing on it after the course
 // name — this is the card you look at with the phone in one hand, already
 // walking, and "AIEB 244" is the part you don't know by heart in week one.
-function NextUp({ current, next, upcoming, nowMinutes, classesToday, phone }) {
+function NextUp({ current, next, upcoming, off, nowMinutes, blocksToday, phone }) {
   const block = current ?? next ?? upcoming?.blocks?.[0] ?? null;
 
   if (!block) {
     return (
-      <HeroCard color={{ solid: colors.accent, soft: colors.chipBg }} label="Classes">
+      <HeroCard color={{ solid: colors.accent, soft: colors.chipBg }} label={off ? 'Day off' : 'Classes'}>
         <div style={{ font: `400 ${phone ? 21 : 24}px ${fonts.serif}`, color: colors.ink }}>
-          {classesToday ? "That's it for today" : 'Nothing scheduled'}
+          {off ? off.name : blocksToday ? "That's it for today" : 'Nothing scheduled'}
         </div>
         <div style={{ font: `500 13px ${fonts.sans}`, color: colors.muted2, marginTop: 5 }}>
-          {classesToday
-            ? `${classesToday} class${classesToday === 1 ? '' : 'es'} already done.`
-            : 'No classes on the books this week.'}
+          {off
+            ? 'Nothing on today. Go and do something else.'
+            : blocksToday
+              ? `${blocksToday} class${blocksToday === 1 ? '' : 'es'} already done.`
+              : 'No classes on the books this week.'}
         </div>
       </HeroCard>
     );
   }
 
-  const c = courseColor(block.course.color);
+  const c = courseColor(block.course?.color);
   const live = Boolean(current);
+  const event = block.type === 'event';
+
+  // An exam says so in the label, because "Next · in 40m" over a course code is
+  // the one case where knowing *what* it is matters more than knowing when.
   const label = live
-    ? 'In class now'
+    ? event
+      ? `${kindLabel(block.event.kind)} in progress`
+      : 'In class now'
     : next
-      ? `Next · in ${fmtDuration(block.start - nowMinutes)}`
-      : `Next class · ${upcoming.label}`;
+      ? `${event ? kindLabel(block.event.kind) : 'Next'} · in ${fmtDuration(block.start - nowMinutes)}`
+      : `Next ${event ? kindLabel(block.event.kind).toLowerCase() : 'class'} · ${upcoming.label}`;
 
   return (
-    <HeroCard color={c} label={label} room={block.course.location} phone={phone}>
+    <HeroCard color={c} label={label} room={block.course?.location} phone={phone}>
       <div
         style={{
           font: `400 ${phone ? 21 : 24}px ${fonts.serif}`,
@@ -346,17 +396,75 @@ function NextUp({ current, next, upcoming, nowMinutes, classesToday, phone }) {
           lineHeight: 1.2,
         }}
       >
-        {block.course.name}
+        {event ? block.event.title : block.course.name}
       </div>
       <div style={{ font: `500 13px ${fonts.sans}`, color: colors.muted2, marginTop: 6 }}>
         <span style={{ color: c.solid, fontWeight: 600 }}>
-          {block.course.code || 'Class'}
+          {block.course?.code || block.course?.name || 'Class'}
         </span>
         {' · '}
         {fmtTimeRange(block.start, block.end)}
         {live ? ` · ${fmtDuration(block.end - nowMinutes)} left` : ''}
       </div>
     </HeroCard>
+  );
+}
+
+/**
+ * The next exam, whenever it is.
+ *
+ * Separate from "due soon" on purpose. A five-day window is the right horizon
+ * for homework and the wrong one for a final — the whole value of knowing about
+ * an exam is knowing early, and a strip that appears three weeks out is the
+ * difference between planning around it and discovering it.
+ */
+function NextExam({ row, course, onOpen }) {
+  const c = courseColor(course?.color);
+  const { a, due } = row;
+  const soon = due.daysLeft != null && due.daysLeft <= 7;
+
+  return (
+    <Card
+      as={onOpen ? 'button' : 'div'}
+      onClick={onOpen ? () => onOpen(a) : undefined}
+      style={{
+        marginTop: 10,
+        padding: '11px 15px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        borderLeft: `4px solid ${c.solid}`,
+        cursor: onOpen ? 'pointer' : 'default',
+      }}
+    >
+      <KindTag kind={a.kind} color={course?.color} />
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          font: `600 13px ${fonts.sans}`,
+          color: colors.ink,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {a.title}
+        <span style={{ color: colors.muted2, fontWeight: 500 }}>
+          {course ? ` · ${course.code || course.name}` : ''}
+        </span>
+      </span>
+      <span
+        style={{
+          font: `600 11.5px ${fonts.sans}`,
+          color: soon ? c.solid : colors.muted2,
+          whiteSpace: 'nowrap',
+          flexShrink: 0,
+        }}
+      >
+        {due.daysLeft === 0 ? due.label : due.daysLeft === 1 ? 'Tomorrow' : `${due.daysLeft} days`}
+      </span>
+    </Card>
   );
 }
 
