@@ -4,6 +4,7 @@ import { DAY_NAMES, toMinutes, fmtMinutes, parseDay, monthDay } from '../dates';
 import { useSemester } from '../data/SemesterProvider';
 import { useIsPhone } from '../useMediaQuery';
 import { Card, SectionHeading, EmptyState, CourseDot, fmtCredits } from '../components/ui';
+import { courseTag } from '../courses';
 import { PrimaryButton, GhostButton } from '../components/Modal';
 
 // The setup tab: what you're taking, when it meets, how each one is graded.
@@ -73,6 +74,11 @@ export function CoursesView({ onAddCourse, onEditCourse, onManageTerms }) {
                         course.instructor,
                         `${fmtCredits(course.credit_hours)} cr`,
                         course.location,
+                        // Only when it isn't the ordinary case: a P/F lab or a
+                        // course you withdrew from behaves differently in every
+                        // number on the page, and the list is where you'd look
+                        // to find out which one it was.
+                        courseTag(course),
                       ]
                         .filter(Boolean)
                         .join(' · ')}

@@ -2,7 +2,9 @@ import { useState, useMemo } from 'react';
 import { colors, tone, fonts, COURSE_COLORS, courseColor } from '../theme';
 import { DAY_NAMES } from '../dates';
 import { DEFAULT_SCALE, PLUS_MINUS_SCALE, scaleFor } from '../grading/scale';
+import { GRADING_BASES, COURSE_STATUSES, basisOf, statusOf } from '../courses';
 import { useSemester } from '../data/SemesterProvider';
+import { ProgramPicker } from './DegreePanel';
 import {
   ModalShell,
   Field,
@@ -64,8 +66,22 @@ function toBlocks(meetings) {
 const newBlock = () => ({ days: [], start: '09:00', end: '09:50' });
 
 export function CourseModal({ course, onClose, phone }) {
-  const { activeTerm, categoriesByCourse, meetingsByCourse, scaleByCourse, createCourse, updateCourse, deleteCourse, setMeetings, setCategories, setScale } =
-    useSemester();
+  const {
+    activeTerm,
+    categoriesByCourse,
+    meetingsByCourse,
+    scaleByCourse,
+    programs,
+    primaryProgram,
+    programIdsByCourse,
+    createCourse,
+    updateCourse,
+    deleteCourse,
+    setMeetings,
+    setCategories,
+    setScale,
+    setCoursePrograms,
+  } = useSemester();
 
   const editing = Boolean(course);
   const existingCats = course ? (categoriesByCourse.get(course.id) ?? []) : [];
@@ -77,6 +93,15 @@ export function CourseModal({ course, onClose, phone }) {
   const [location, setLocation] = useState(course?.location ?? '');
   const [credits, setCredits] = useState(String(course?.credit_hours ?? 3));
   const [color, setColor] = useState(course?.color ?? COURSE_COLORS[0]);
+  const [basis, setBasis] = useState(course?.grading_basis ?? 'graded');
+  const [status, setStatus] = useState(course?.status ?? 'enrolled');
+  // A new course counts toward whatever you're mainly doing, because that is
+  // the true answer for nearly all of them. The exceptions — the graduate
+  // course, the one taken for interest — are two taps, and they are the only
+  // ones worth asking about.
+  const [planIds, setPlanIds] = useState(() =>
+    course ? (programIdsByCourse.get(course.id) ?? []) : primaryProgram ? [primaryProgram.id] : [],
+  );
   const [blocks, setBlocks] = useState(() => toBlocks(course ? (meetingsByCourse.get(course.id) ?? []) : []));
   const [cats, setCats] = useState(() =>
     editing
@@ -154,16 +179,22 @@ export function CourseModal({ course, onClose, phone }) {
         location: fields.location.trim() || null,
         credit_hours: fields.creditHours,
         color: fields.color,
+        grading_basis: basis,
+        status,
       });
       await setMeetings(course.id, expandMeetings());
       await setCategories(course.id, cleanCats);
       await setScale(course.id, scaleRows);
+      await setCoursePrograms(course.id, planIds);
     } else {
       const created = await createCourse({
         termId: activeTerm.id,
         ...fields,
+        gradingBasis: basis,
+        status,
         meetings: expandMeetings(),
         categories: cleanCats,
+        programIds: planIds,
       });
       if (created && scaleRows.length) await setScale(created.id, scaleRows);
     }
@@ -276,6 +307,62 @@ export function CourseModal({ course, onClose, phone }) {
           })}
         </div>
       </Field>
+
+      <Divider />
+
+      {/* ------------------------------------------------- basis and status */}
+      <SectionTitle title="How it counts" hint="most courses are the first option of each" />
+
+      <Field label="Grading">
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {GRADING_BASES.map(([key, label]) => (
+            <Chip key={key} active={basis === key} onClick={() => setBasis(key)}>
+              {label}
+            </Chip>
+          ))}
+        </div>
+      </Field>
+
+      <Field label="Where it stands">
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {COURSE_STATUSES.map(([key, label]) => (
+            <Chip key={key} active={status === key} onClick={() => setStatus(key)}>
+              {label}
+            </Chip>
+          ))}
+        </div>
+      </Field>
+
+      {/* Only when it isn't the ordinary case. A line explaining that a graded,
+          enrolled course produces a grade is a line nobody needs. */}
+      {(basisOf(basis).note && basis !== 'graded') || statusOf(status).note ? (
+        <div
+          style={{
+            font: `400 11.5px/1.55 ${fonts.sans}`,
+            color: colors.muted2,
+            background: colors.inputBg,
+            border: `1px solid ${colors.cardBorder}`,
+            borderRadius: 11,
+            padding: '9px 12px',
+            marginTop: -8,
+            marginBottom: 16,
+          }}
+        >
+          {[basis !== 'graded' ? basisOf(basis).note : null, statusOf(status).note]
+            .filter(Boolean)
+            .join('. ')}
+          .
+        </div>
+      ) : null}
+
+      {programs.length > 0 && (
+        <ProgramPicker
+          programs={programs}
+          selected={planIds}
+          onChange={setPlanIds}
+          label="Counts toward"
+        />
+      )}
 
       <Divider />
 

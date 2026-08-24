@@ -142,8 +142,19 @@ export function gradeCourse({ categories = [], assignments = [], overrides = {},
   // can't be weighted, so they sit outside the grade — surfaced as a count so
   // the UI can say so rather than silently dropping them.
   const uncategorized = [];
+  // Work the course doesn't grade at all: the problem sets a professor hands out
+  // "for your own benefit" and never collects. Held separately from the
+  // uncategorized pile because the two look identical from here and mean
+  // opposite things — one is a gap in the data worth nagging about, the other is
+  // a fact about the course and nothing to fix.
+  const notCounted = [];
 
   for (const a of assignments) {
+    if (a.counts_toward_grade === false) {
+      notCounted.push(a);
+      continue;
+    }
+
     const inCategory = a.category_id && known.has(a.category_id);
     const score = scoreOf(a, num(overrides[a.id]));
 
@@ -186,6 +197,7 @@ export function gradeCourse({ categories = [], assignments = [], overrides = {},
     // add to 100 — a typo here quietly skews the whole term.
     weightsSum: sum(categories, (c) => num(c.weight_pct) ?? 0),
     uncategorizedCount: uncategorized.length,
+    notCountedCount: notCounted.length,
     remainingCount: sum(categoriesOut, (c) => c.remainingCount),
     remainingPossible: sum(categoriesOut, (c) => c.remainingPossible),
   };
@@ -202,6 +214,7 @@ function projectAt({ categories, assignments, overrides, frac }) {
   const itemsByCat = new Map();
 
   for (const a of assignments) {
+    if (a.counts_toward_grade === false) continue;
     if (!a.category_id || !known.has(a.category_id)) continue;
 
     const possible = num(a.points_possible) ?? 0;
@@ -245,6 +258,7 @@ export function neededOnRemaining(
 
   const remaining = assignments.filter(
     (a) =>
+      a.counts_toward_grade !== false &&
       a.category_id &&
       known.has(a.category_id) &&
       (num(a.points_possible) ?? 0) > 0 &&
@@ -308,6 +322,43 @@ export function neededOnRemaining(
   };
 }
 
+// ------------------------------------------------- what a course actually earns
+
+/**
+ * Whether a course produces credit, grade points, both, or neither.
+ *
+ * One place decides this because it is asked from three directions — the GPA,
+ * the degree bar, and the credit ledger — and three copies of the rule would be
+ * three chances for your transcript and your progress bar to disagree.
+ *
+ * The rules, and none of them are this app's invention:
+ *
+ *   graded, enrolled   credit and grade points. The ordinary case.
+ *   pass_fail          credit, no grade points. Passing a pass/fail course
+ *                      advances the degree and leaves the GPA untouched, which
+ *                      is the entire reason anyone takes one.
+ *   audit              neither. You were in the room; the registrar was not.
+ *   withdrawn          neither. A W is not an F — scoring the 41% you were
+ *                      carrying when you dropped would be the most misleading
+ *                      number this app is capable of showing.
+ *   incomplete         credit pending, no grade points yet. Left out of the GPA
+ *                      the same way an ungraded course is, because that is what
+ *                      it is: a grade that has not arrived.
+ *
+ * Reads the database column names, with the defaults applied here rather than at
+ * every call site — rows written before 0003 have neither column.
+ */
+export function courseStanding(course = {}) {
+  const basis = course.grading_basis ?? 'graded';
+  const status = course.status ?? 'enrolled';
+
+  if (status === 'withdrawn') return { earnsCredit: false, earnsGradePoints: false, why: 'withdrawn' };
+  if (basis === 'audit') return { earnsCredit: false, earnsGradePoints: false, why: 'audit' };
+  if (basis === 'pass_fail') return { earnsCredit: true, earnsGradePoints: false, why: 'pass_fail' };
+  if (status === 'incomplete') return { earnsCredit: true, earnsGradePoints: false, why: 'incomplete' };
+  return { earnsCredit: true, earnsGradePoints: true, why: null };
+}
+
 // ------------------------------------------------------------------ GPA
 
 /**
@@ -332,9 +383,20 @@ export function gpaFor(entries = [], priors = []) {
   let credits = 0;
   let counted = 0;
   let ungraded = 0;
+  let excluded = 0;
 
   for (const e of entries) {
     const hours = num(e.creditHours) ?? 0;
+
+    // A pass/fail lab, an audited seminar and a course you withdrew from are
+    // not courses "with no grade yet" — they will never have one, and lumping
+    // them in with the ungraded pile would have the UI promising a number that
+    // is never coming. Counted apart so it can say which is which.
+    if (!courseStanding(e).earnsGradePoints) {
+      excluded += 1;
+      continue;
+    }
+
     const gp = gradePoints(e.letter);
     if (gp == null || hours <= 0) {
       ungraded += 1;
@@ -367,6 +429,7 @@ export function gpaFor(entries = [], priors = []) {
     credits: totalCredits,
     counted,
     ungraded,
+    excluded,
     priorCredits,
     // What the tracked semesters alone say, which is the honest answer to "how
     // is it going *now*" once history is in the mix and barely moves.
@@ -441,4 +504,191 @@ export function degreeProgress({
         }
       : { earned: 0, inProgress: 0 },
   };
+}
+
+// ----------------------------------------------------------- credit ledger
+
+/**
+ * Where every credit you have taken actually goes.
+ *
+ * The question this answers is the one a single degree total cannot: you have
+ * 169 credits and the degree takes 120, and the interesting part is not the
+ * 49 — it's that 120 of them are the engineering degree, 31 are a second one,
+ * 12 are graduate hours and six were a class about film noir.
+ *
+ * Credits can belong to more than one program and usually some belong to none:
+ *
+ *   shared     Calculus I counts toward both degrees. It is one course, one
+ *              grade and three credits, and it advances two bars. The program
+ *              totals therefore sum to *more* than `total`, which is correct
+ *              and is exactly why `shared` is reported rather than left for
+ *              someone to discover as an inconsistency.
+ *   unapplied  the classes you took because they looked interesting. Real
+ *              credits with a real grade in the real GPA — just not pointed at
+ *              anything with a finish line.
+ *
+ * `entries` are pre-shaped by the app layer:
+ *   { credits, programIds, state: 'earned' | 'inProgress' | 'future', earnsCredit }
+ */
+export function summarizeCredits({ entries = [], programs = [] } = {}) {
+  const byProgram = new Map(programs.map((p) => [p.id, { earned: 0, inProgress: 0 }]));
+
+  let earned = 0;
+  let inProgress = 0;
+  let applied = 0;
+  let unapplied = 0;
+  let shared = 0;
+  // Audited and withdrawn hours. Not credits — but they were real semesters of
+  // your life, and a ledger that silently omits them invites the question "why
+  // doesn't this match my transcript".
+  let noCredit = 0;
+
+  for (const e of entries) {
+    const credits = Math.max(0, num(e.credits) ?? 0);
+    if (!(credits > 0)) continue;
+
+    // Registered-for is not carrying: a term that hasn't started counts toward
+    // nothing yet, the same rule the degree bar has always used.
+    const state = e.state === 'inProgress' ? 'inProgress' : e.state === 'future' ? 'future' : 'earned';
+    if (state === 'future') continue;
+
+    if (e.earnsCredit === false) {
+      noCredit += credits;
+      continue;
+    }
+
+    // Ids pointing at a program that no longer exists are dropped rather than
+    // counted into a bar nothing draws.
+    const ids = [...new Set(e.programIds ?? [])].filter((id) => byProgram.has(id));
+
+    if (state === 'earned') earned += credits;
+    else inProgress += credits;
+
+    if (!ids.length) {
+      unapplied += credits;
+      continue;
+    }
+
+    applied += credits;
+    if (ids.length > 1) shared += credits;
+    for (const id of ids) byProgram.get(id)[state] += credits;
+  }
+
+  return {
+    total: earned + inProgress,
+    earned,
+    inProgress,
+    applied,
+    unapplied,
+    shared,
+    noCredit,
+    byProgram,
+  };
+}
+
+// ------------------------------------------------------- the term as a whole
+
+// The lowest letter on a given scale worth at least `points` grade points. On a
+// straight scale that's "B" for 3; on a plus/minus scale it's "B-", which is a
+// materially easier target and the one a student should be told about.
+function lowestLetterWorth(points, scale) {
+  let best = null;
+  for (const row of scale) {
+    const gp = gradePoints(row.letter);
+    if (gp == null || gp < points) continue;
+    if (!best || row.min < best.min) best = row;
+  }
+  return best;
+}
+
+/**
+ * "I need a 3.5 this term — what does that mean for each class?"
+ *
+ * The per-course solver answers "what do I need on the work left in *this*
+ * course". This is the question one level up, and it is genuinely a different
+ * one: a term GPA is a single number produced by five courses at once, and
+ * there are many combinations of letters that reach it.
+ *
+ * Rather than pick one combination and present it as *the* answer, each course
+ * is solved on the same honest assumption: **everything else lands where it
+ * stands today**. That makes each line independently checkable — "if the others
+ * hold, Heat Transfer has to be a B" — instead of a plan that quietly falls
+ * apart the moment one number moves.
+ *
+ * Only courses that produce grade points are in it. A pass/fail lab cannot help
+ * or hurt a GPA target, and listing it with a required letter would be inventing
+ * a requirement that does not exist.
+ *
+ * `entries`: { id, creditHours, letter, scale, ...course row }
+ */
+export function termGpaPlan(entries = [], targetGpa) {
+  const target = num(targetGpa);
+  const counted = entries.filter(
+    (e) => courseStanding(e).earnsGradePoints && (num(e.creditHours) ?? 0) > 0,
+  );
+
+  const standing = gpaFor(counted);
+  const base = {
+    target,
+    gpa: standing.gpa,
+    credits: standing.credits,
+    counted: counted.length,
+    excluded: entries.length - counted.length,
+    met: standing.gpa != null && target != null && standing.gpa >= target,
+  };
+
+  if (target == null || !counted.length) return { ...base, courses: [] };
+
+  const courses = counted.map((e) => {
+    const hours = num(e.creditHours) ?? 0;
+    const scale = e.scale ?? DEFAULT_SCALE;
+
+    // Everything except this course, held exactly where it is. Courses with no
+    // letter yet contribute to neither side — they aren't evidence in either
+    // direction, and counting them as zero would manufacture a crisis in week
+    // three.
+    let otherPoints = 0;
+    let otherCredits = 0;
+    for (const o of counted) {
+      if (o === e) continue;
+      const gp = gradePoints(o.letter);
+      const oh = num(o.creditHours) ?? 0;
+      if (gp == null || oh <= 0) continue;
+      otherPoints += gp * oh;
+      otherCredits += oh;
+    }
+
+    // (otherPoints + gp·hours) / (otherCredits + hours) ≥ target
+    const exact = (target * (otherCredits + hours) - otherPoints) / hours;
+
+    const row = {
+      id: e.id,
+      creditHours: hours,
+      currentLetter: e.letter ?? null,
+      exactPoints: exact,
+    };
+
+    if (exact <= 0) return { ...row, status: 'locked', neededPoints: 0, neededLetter: null, neededPct: null };
+
+    // Grade points come in whole steps — there is no 3.4 to earn — so the real
+    // requirement is the next whole one up. The epsilon is for the exact-3.0
+    // case arriving as 3.0000000000000004 and demanding an A.
+    const neededPoints = Math.ceil(exact - 1e-9);
+    if (neededPoints > 4) {
+      return { ...row, status: 'impossible', neededPoints, neededLetter: null, neededPct: null };
+    }
+
+    const letterRow = lowestLetterWorth(neededPoints, scale);
+    return {
+      ...row,
+      status: 'reachable',
+      neededPoints,
+      neededLetter: letterRow?.letter ?? null,
+      // The percentage that letter starts at — the number that hands straight
+      // to the per-course solver as its target.
+      neededPct: letterRow?.min ?? null,
+    };
+  });
+
+  return { ...base, courses };
 }

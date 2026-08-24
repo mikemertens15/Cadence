@@ -1,7 +1,15 @@
 import { useMemo } from 'react';
 import { useSemester } from './SemesterProvider';
 import { dayStr } from '../dates';
-import { gradeCourse, neededOnRemaining, gpaFor, degreeProgress } from '../grading/engine';
+import {
+  gradeCourse,
+  neededOnRemaining,
+  gpaFor,
+  degreeProgress,
+  courseStanding,
+  summarizeCredits,
+  termGpaPlan,
+} from '../grading/engine';
 import { scaleFor } from '../grading/scale';
 
 // The seam between the pure grade math and the app's data. Everything here just
@@ -79,13 +87,16 @@ export function useGpa() {
     useSemester();
 
   return useMemo(() => {
+    // The whole course row travels with the entry, because `grading_basis` and
+    // `status` decide whether it belongs in a GPA at all and the engine is the
+    // one place that gets to make that call.
     const entries = allCourses.map((course) => {
       const grade = gradeCourse({
         categories: categoriesByCourse.get(course.id) ?? [],
         assignments: assignmentsByCourse.get(course.id) ?? [],
         scale: scaleFor(scaleByCourse.get(course.id)),
       });
-      return { termId: course.term_id, creditHours: course.credit_hours, letter: grade.letter };
+      return { ...course, termId: course.term_id, creditHours: course.credit_hours, letter: grade.letter };
     });
 
     const priors = priorTerms.map((p) => ({ creditHours: p.credit_hours, gpa: p.gpa }));
@@ -99,7 +110,19 @@ export function useGpa() {
 }
 
 /**
- * Where you are in the degree, in credits.
+ * Where every credit you have goes, and how far along each program is.
+ *
+ * The question this replaces is "how far through the degree are you", which had
+ * exactly one answer and needed exactly one number. Six years in, that is the
+ * wrong shape: there is a degree, possibly a second one, maybe some graduate
+ * hours, and a handful of classes taken because they looked interesting — and
+ * "169 credits out of 120" describes none of them.
+ *
+ * Two things come back. `programs` is one entry per thing you're working
+ * toward, each with its own bar and its own GPA (a graduate GPA is genuinely
+ * its own number, not a contribution to an undergraduate one). `ledger` is the
+ * accounting underneath: what your credits add up to, how many are shared
+ * between programs, and how many are pointed at nothing.
  *
  * A term's credits count as *earned* once it's over and as *in progress* while
  * you're in it — decided by the term's own end date rather than by whether every
@@ -107,36 +130,165 @@ export function useGpa() {
  * professor shouldn't move the bar. Terms that haven't started are left out of
  * both: credits you've registered for are not credits you're carrying.
  */
-export function useDegreeProgress() {
-  const { terms, allCourses, degreePlan, priorCredits } = useSemester();
+export function usePrograms() {
+  const {
+    terms,
+    allCourses,
+    programs,
+    priorTerms,
+    programIdsByCourse,
+    programIdsByPriorTerm,
+    categoriesByCourse,
+    assignmentsByCourse,
+    scaleByCourse,
+  } = useSemester();
 
   return useMemo(() => {
     const today = dayStr();
 
-    const creditsByTerm = new Map();
-    for (const c of allCourses) {
-      creditsByTerm.set(c.term_id, (creditsByTerm.get(c.term_id) ?? 0) + (Number(c.credit_hours) || 0));
-    }
+    const stateOf = (termId) => {
+      const t = terms.find((x) => x.id === termId);
+      if (!t) return 'earned';
+      if (t.end_date < today) return 'earned';
+      if (t.start_date <= today) return 'inProgress';
+      return 'future';
+    };
 
-    let doneCredits = 0;
-    let inProgressCredits = 0;
-    for (const t of terms) {
-      const credits = creditsByTerm.get(t.id) ?? 0;
-      if (t.end_date < today) doneCredits += credits;
-      else if (t.start_date <= today) inProgressCredits += credits;
-    }
+    const courseEntries = allCourses.map((course) => ({
+      course,
+      credits: Number(course.credit_hours) || 0,
+      programIds: programIdsByCourse.get(course.id) ?? [],
+      state: stateOf(course.term_id),
+      earnsCredit: courseStanding(course).earnsCredit,
+    }));
+
+    const priorEntries = priorTerms.map((t) => ({
+      prior: t,
+      credits: Number(t.credit_hours) || 0,
+      programIds: programIdsByPriorTerm.get(t.id) ?? [],
+      state: 'earned',
+      earnsCredit: true,
+    }));
+
+    const ledger = summarizeCredits({
+      programs,
+      entries: [...courseEntries, ...priorEntries],
+    });
+
+    // A course's letter is needed for the per-program GPA, and computing it once
+    // here beats computing it inside the loop for every program it touches.
+    const lettered = courseEntries.map((e) => ({
+      ...e,
+      entry: {
+        ...e.course,
+        creditHours: e.course.credit_hours,
+        letter: gradeCourse({
+          categories: categoriesByCourse.get(e.course.id) ?? [],
+          assignments: assignmentsByCourse.get(e.course.id) ?? [],
+          scale: scaleFor(scaleByCourse.get(e.course.id)),
+        }).letter,
+      },
+    }));
+
+    const rows = programs.map((plan) => {
+      const credits = ledger.byProgram.get(plan.id) ?? { earned: 0, inProgress: 0 };
+
+      const progress = degreeProgress({
+        creditsRequired: plan.credits_required,
+        // A program's earned total already has its share of the old credits in
+        // it, so there is nothing left for `priorCredits` to add — the split
+        // that matters here is banked against in-progress.
+        priorCredits: 0,
+        doneCredits: credits.earned,
+        inProgressCredits: credits.inProgress,
+      });
+
+      const gpa = gpaFor(
+        lettered.filter((e) => e.programIds.includes(plan.id)).map((e) => e.entry),
+        priorEntries
+          .filter((e) => e.programIds.includes(plan.id))
+          .map((e) => ({ creditHours: e.prior.credit_hours, gpa: e.prior.gpa })),
+      );
+
+      return { plan, progress, gpa, credits };
+    });
 
     return {
-      ...degreeProgress({
-        creditsRequired: degreePlan?.credits_required ?? 120,
-        priorCredits,
-        doneCredits,
-        inProgressCredits,
-      }),
-      // Null until someone opens Settings and says what they're working toward.
-      // The UI uses this to decide between an invitation and a progress bar.
-      plan: degreePlan,
-      configured: Boolean(degreePlan),
+      programs: rows,
+      ledger,
+      // Null until someone says what they're working toward. The UI uses this to
+      // choose between an invitation and a set of bars.
+      configured: programs.length > 0,
     };
-  }, [terms, allCourses, degreePlan, priorCredits]);
+  }, [
+    terms,
+    allCourses,
+    programs,
+    priorTerms,
+    programIdsByCourse,
+    programIdsByPriorTerm,
+    categoriesByCourse,
+    assignmentsByCourse,
+    scaleByCourse,
+  ]);
+}
+
+/**
+ * "What do I need in each class to finish the term at X?"
+ *
+ * The per-course solver already answers "what do I need on the work left in
+ * *this* course". This is that question asked of the whole term at once, and it
+ * chains the two: the engine works out the letter each course needs assuming
+ * the others hold, and then — because a letter is a cutoff on that course's own
+ * scale — the same bisection solver that powers the course page turns that
+ * cutoff into a score on the work actually remaining.
+ *
+ * So the sentence at the end is "Heat Transfer needs a B, which means 88% on
+ * the four assignments left", and both halves of it come from code that is
+ * already keeping the live grade honest.
+ */
+export function useTermGpaPlan(target) {
+  const { courses, categoriesByCourse, assignmentsByCourse, scaleByCourse } = useSemester();
+
+  return useMemo(() => {
+    const entries = courses.map((course) => {
+      const categories = categoriesByCourse.get(course.id) ?? [];
+      const assignments = assignmentsByCourse.get(course.id) ?? [];
+      const scale = scaleFor(scaleByCourse.get(course.id));
+      const grade = gradeCourse({ categories, assignments, scale });
+      return {
+        ...course,
+        creditHours: course.credit_hours,
+        letter: grade.letter,
+        pct: grade.pct,
+        scale,
+        categories,
+        assignments,
+      };
+    });
+
+    const plan = termGpaPlan(entries, target);
+    const byId = new Map(entries.map((e) => [e.id, e]));
+
+    return {
+      ...plan,
+      courses: plan.courses.map((row) => {
+        const e = byId.get(row.id);
+        return {
+          ...row,
+          course: e,
+          currentPct: e?.pct ?? null,
+          // Only worth solving when there is a cutoff to aim at. "Already
+          // yours" and "out of reach" have nothing left to ask the solver.
+          solved:
+            row.status === 'reachable' && row.neededPct != null && e
+              ? neededOnRemaining(
+                  { categories: e.categories, assignments: e.assignments, scale: e.scale },
+                  row.neededPct,
+                )
+              : null,
+        };
+      }),
+    };
+  }, [courses, categoriesByCourse, assignmentsByCourse, scaleByCourse, target]);
 }

@@ -5,6 +5,13 @@ import { useTheme } from '../useTheme';
 import { useAuth } from '../auth/AuthProvider';
 import { useSemester } from '../data/SemesterProvider';
 import { BUILD } from '../data/releases';
+import {
+  toBackupJson,
+  toGradesCsv,
+  download,
+  backupFilename,
+  gradesFilename,
+} from '../data/backup';
 import { ModalShell, Field, Chip, inputStyle, PrimaryButton, GhostButton } from './Modal';
 import { BreaksPanel } from './BreaksPanel';
 import { DegreePanel } from './DegreePanel';
@@ -17,7 +24,7 @@ import { DegreePanel } from './DegreePanel';
 export function SettingsModal({ onClose, phone, startOn = 'terms' }) {
   const { mode, setMode } = useTheme();
   const { session, setPassword, signOut } = useAuth();
-  const { terms, activeTerm, setTermId, createTerm, deleteTerm } = useSemester();
+  const { terms, activeTerm, setTermId, createTerm, deleteTerm, rawRows } = useSemester();
 
   const [tab, setTab] = useState(startOn);
   const [adding, setAdding] = useState(false);
@@ -73,6 +80,9 @@ export function SettingsModal({ onClose, phone, startOn = 'terms' }) {
         </Chip>
         <Chip active={tab === 'look'} onClick={() => setTab('look')}>
           Appearance
+        </Chip>
+        <Chip active={tab === 'data'} onClick={() => setTab('data')}>
+          Data
         </Chip>
         <Chip active={tab === 'account'} onClick={() => setTab('account')}>
           Account
@@ -185,6 +195,8 @@ export function SettingsModal({ onClose, phone, startOn = 'terms' }) {
         </Field>
       )}
 
+      {tab === 'data' && <DataPanel rows={rawRows} />}
+
       {tab === 'account' && (
         <>
           <div
@@ -239,5 +251,85 @@ export function SettingsModal({ onClose, phone, startOn = 'terms' }) {
         </>
       )}
     </ModalShell>
+  );
+}
+
+/**
+ * Getting your data back out.
+ *
+ * A year of scores lives in a database behind someone else's login, and until
+ * 1.0 there was no way to hold a copy. That is a fine trade for a weekend
+ * project and a bad one for the app you're running a degree on.
+ *
+ * Two formats because they fail in opposite directions: the JSON keeps
+ * everything and is unreadable, the CSV is readable and throws away structure.
+ * Neither is a substitute for the other, so neither is the "advanced" one
+ * hidden behind a disclosure.
+ */
+function DataPanel({ rows }) {
+  const [note, setNote] = useState('');
+
+  const counts = {
+    courses: rows.courses.length,
+    assignments: rows.assignments.length,
+    terms: rows.terms.length,
+  };
+
+  const save = (kind) => {
+    if (kind === 'json') download(backupFilename(), toBackupJson(rows), 'application/json');
+    else download(gradesFilename(), toGradesCsv(rows), 'text/csv');
+    setNote('Saved to your downloads.');
+  };
+
+  return (
+    <>
+      <div style={{ font: `400 12.5px/1.6 ${fonts.sans}`, color: colors.muted2, marginBottom: 16 }}>
+        Everything Cadence knows about you is{' '}
+        <span className="cad-nums">{counts.terms}</span> term
+        {counts.terms === 1 ? '' : 's'}, <span className="cad-nums">{counts.courses}</span> course
+        {counts.courses === 1 ? '' : 's'} and <span className="cad-nums">{counts.assignments}</span>{' '}
+        piece{counts.assignments === 1 ? '' : 's'} of work. Take a copy whenever you like.
+      </div>
+
+      <div style={{ display: 'grid', gap: 10, marginBottom: 14 }}>
+        <ExportRow
+          title="Full backup"
+          body="Every row of every table, exactly as stored. The one to keep."
+          action="Download .json"
+          onClick={() => save('json')}
+        />
+        <ExportRow
+          title="Grades as a spreadsheet"
+          body="One row per piece of work, with course and category names spelled out. The one to open when a professor's number and Cadence's disagree."
+          action="Download .csv"
+          onClick={() => save('csv')}
+        />
+      </div>
+
+      {note && (
+        <div style={{ font: `500 12px ${fonts.sans}`, color: colors.accentDark }}>{note}</div>
+      )}
+    </>
+  );
+}
+
+function ExportRow({ title, body, action, onClick }) {
+  return (
+    <div
+      style={{
+        padding: '13px 14px',
+        borderRadius: 13,
+        background: colors.inputBg,
+        border: `1px solid ${colors.cardBorder}`,
+      }}
+    >
+      <div style={{ font: `600 13px ${fonts.sans}`, color: colors.ink }}>{title}</div>
+      <div style={{ font: `400 11.5px/1.5 ${fonts.sans}`, color: colors.muted2, margin: '3px 0 9px' }}>
+        {body}
+      </div>
+      <button onClick={onClick} style={{ font: `600 12.5px ${fonts.sans}`, color: colors.accent }}>
+        {action}
+      </button>
+    </div>
   );
 }

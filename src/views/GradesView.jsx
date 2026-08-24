@@ -3,7 +3,8 @@ import { colors, tone, fonts, courseColor } from '../theme';
 import { describeDue } from '../dates';
 import { isEvent } from '../assignments';
 import { useSemester } from '../data/SemesterProvider';
-import { useCourseGrade, useTermGrades, useGpa, EMPTY_OVERRIDES } from '../data/grades';
+import { useCourseGrade, useTermGrades, useGpa, useTermGpaPlan, EMPTY_OVERRIDES } from '../data/grades';
+import { courseTag } from '../courses';
 import { useIsPhone } from '../useMediaQuery';
 import { isGraded } from '../grading/engine';
 import {
@@ -77,6 +78,13 @@ export function GradesView({ onOpenCourse, onAddCourse, onOpenDegree, navigate }
                 {course.code ? `${course.code} · ` : ''}
                 {fmtCredits(course.credit_hours)} cr
                 {grade.remainingCount > 0 ? ` · ${grade.remainingCount} left` : ''}
+                {/* A pass/fail lab or a course you withdrew from is still a
+                    course with work in it — but its grade means something
+                    different, and a row that doesn't say so is a row that
+                    quietly misleads. */}
+                {courseTag(course) && (
+                  <span style={{ color: colors.faint }}> · {courseTag(course)}</span>
+                )}
               </div>
               {!phone && grade.hasGrades && (
                 <div style={{ marginTop: 9, maxWidth: 260 }}>
@@ -90,6 +98,10 @@ export function GradesView({ onOpenCourse, onAddCourse, onOpenDegree, navigate }
       </div>
 
       <GpaPanel gpa={gpa} phone={phone} />
+
+      <div style={{ marginTop: 26 }}>
+        <TermTarget phone={phone} navigate={navigate} />
+      </div>
 
       <div style={{ marginTop: 26 }}>
         <DegreeProgress onSetUp={onOpenDegree} />
@@ -143,6 +155,10 @@ function GpaPanel({ gpa, phone }) {
         Based on where each course stands right now, on a straight 4.0 scale.
         {gpa.cumulative.ungraded > 0 &&
           ` ${gpa.cumulative.ungraded} course${gpa.cumulative.ungraded === 1 ? '' : 's'} with no graded work yet ${gpa.cumulative.ungraded === 1 ? 'is' : 'are'} left out.`}
+        {/* Said separately from the ungraded count on purpose: one is waiting
+            for a number and the other is never getting one. */}
+        {gpa.cumulative.excluded > 0 &&
+          ` ${gpa.cumulative.excluded} pass/fail, audited or withdrawn ${gpa.cumulative.excluded === 1 ? 'course carries' : 'courses carry'} no grade points at all.`}
       </div>
       {/* Until history is in, "cumulative" is a word this app has not earned —
           it means one semester, and for anyone past their first that is a
@@ -511,6 +527,7 @@ function Assignments({ grade, whatIf, setWhatIf, clearWhatIf, simulating, onScor
   const byCategory = useMemo(() => {
     const map = new Map(grade.categories.map((c) => [c.id, []]));
     for (const a of grade.assignments) {
+      if (a.counts_toward_grade === false) continue;
       if (a.category_id && map.has(a.category_id)) map.get(a.category_id).push(a);
     }
     for (const list of map.values()) {
@@ -518,6 +535,18 @@ function Assignments({ grade, whatIf, setWhatIf, clearWhatIf, simulating, onScor
     }
     return map;
   }, [grade.categories, grade.assignments]);
+
+  // Work this course doesn't grade. Listed rather than hidden — it's real work
+  // with a real date, and leaving it off the one page that shows everything for
+  // this course would make the page quietly incomplete. Below the graded
+  // categories, without score boxes, because there is nothing to type in.
+  const notCounted = useMemo(
+    () =>
+      grade.assignments
+        .filter((a) => a.counts_toward_grade === false)
+        .sort((x, y) => String(x.due_at ?? '9').localeCompare(String(y.due_at ?? '9'))),
+    [grade.assignments],
+  );
 
   return (
     <section>
@@ -578,8 +607,201 @@ function Assignments({ grade, whatIf, setWhatIf, clearWhatIf, simulating, onScor
             </Card>
           );
         })}
+
+        {notCounted.length > 0 && (
+          <Card style={{ padding: phone ? '4px 14px' : '6px 20px' }}>
+            <div
+              style={{
+                padding: '12px 0 10px',
+                font: `600 11.5px ${fonts.sans}`,
+                color: colors.muted,
+                textTransform: 'uppercase',
+                letterSpacing: '0.06em',
+              }}
+            >
+              Not graded
+              <span style={{ textTransform: 'none', letterSpacing: 0, color: colors.faint, fontWeight: 500 }}>
+                {' '}
+                · {notCounted.length} item{notCounted.length === 1 ? '' : 's'}, no effect on the
+                grade above
+              </span>
+            </div>
+
+            {notCounted.map((a, i) => (
+              <button
+                key={a.id}
+                onClick={() => onOpen(a)}
+                style={{
+                  width: '100%',
+                  textAlign: 'left',
+                  padding: '11px 0',
+                  borderTop: i === 0 ? 'none' : `1px solid ${colors.divider}`,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <span style={{ font: `600 13.5px ${fonts.sans}`, color: colors.muted3 }}>
+                    {a.title}
+                  </span>
+                  <KindTag kind={a.kind} />
+                </div>
+                <div style={{ font: `400 11px ${fonts.sans}`, color: colors.faint, marginTop: 2 }}>
+                  {a.due_at
+                    ? describeDue(a.due_at, undefined, { event: isEvent(a.kind) }).label
+                    : 'No due date'}
+                </div>
+              </button>
+            ))}
+          </Card>
+        )}
       </div>
     </section>
+  );
+}
+
+/**
+ * "What do I need in each class to finish the term at 3.5?"
+ *
+ * The course page answers this one course at a time; a term GPA is produced by
+ * five courses at once and there are many combinations of letters that reach it.
+ * Rather than invent one and present it as the plan, every line is solved on the
+ * same stated assumption — everything else lands where it stands today — which
+ * makes each one independently true instead of a set that collapses the moment
+ * one number moves.
+ *
+ * The second half of each line is the part that makes it actionable: a letter is
+ * a cutoff on that course's own scale, so the same solver that runs the course
+ * page turns "needs a B" into "88% on the four assignments left".
+ */
+function TermTarget({ phone, navigate }) {
+  const { primaryProgram } = useSemester();
+  const [target, setTarget] = useState(() => {
+    const goal = Number(primaryProgram?.gpa_goal);
+    return Number.isFinite(goal) && goal > 0 ? goal : 3.5;
+  });
+  const plan = useTermGpaPlan(target);
+
+  // Nothing to say about a term with no courses that carry grade points — an
+  // all-pass/fail semester has no GPA to aim at.
+  if (!plan.courses.length) return null;
+
+  return (
+    <>
+      <SectionHeading>Finishing this term at</SectionHeading>
+      <Card style={{ padding: phone ? '16px 16px' : '18px 20px' }}>
+        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+          {[4, 3.7, 3.5, 3, 2].map((t) => (
+            <Chip key={t} active={Math.abs(target - t) < 0.001} onClick={() => setTarget(t)}>
+              {t.toFixed(1)}
+            </Chip>
+          ))}
+          <input
+            type="number"
+            min="0"
+            max="4"
+            step="0.1"
+            value={target}
+            onChange={(e) => setTarget(Number(e.target.value))}
+            aria-label="Custom term GPA target"
+            style={{ ...inputStyle, width: 78, textAlign: 'right', padding: '9px 10px' }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, flexWrap: 'wrap' }}>
+          <span
+            className="cad-nums"
+            style={{
+              font: `600 26px ${fonts.sans}`,
+              color: plan.met ? tone.green : colors.ink,
+              letterSpacing: '-0.02em',
+            }}
+          >
+            {fmtGpa(plan.gpa)}
+          </span>
+          <span style={{ font: `400 13px ${fonts.sans}`, color: colors.muted2 }}>
+            {plan.gpa == null
+              ? 'no graded work in the term yet'
+              : plan.met
+                ? `where the term stands — already past ${fmtGpa(target)}`
+                : `where the term stands, over ${fmtCredits(plan.credits)} credits`}
+          </span>
+        </div>
+
+        <div style={{ display: 'grid', gap: 2, marginTop: 14 }}>
+          {plan.courses.map((row) => (
+            <TargetRow key={row.id} row={row} navigate={navigate} />
+          ))}
+        </div>
+
+        <div style={{ font: `400 11px/1.5 ${fonts.sans}`, color: colors.faint, marginTop: 12 }}>
+          Each line assumes every other course finishes where it stands now. They&rsquo;re true one
+          at a time, not all at once — improve two of them and both get easier.
+          {plan.excluded > 0 &&
+            ` ${plan.excluded} course${plan.excluded === 1 ? '' : 's'} left out: pass/fail, audited or withdrawn work carries no grade points.`}
+        </div>
+      </Card>
+    </>
+  );
+}
+
+function TargetRow({ row, navigate }) {
+  const { course } = row;
+
+  const detail = () => {
+    if (row.status === 'locked') return { text: 'Nothing needed here', color: tone.green };
+    if (row.status === 'impossible')
+      return { text: 'No grade here reaches it alone', color: tone.red };
+
+    const letter = `Needs ${/^[AEIOU]/i.test(row.neededLetter ?? '') ? 'an' : 'a'} ${row.neededLetter}`;
+    const s = row.solved;
+    if (!s) return { text: letter, color: colors.ink };
+    if (s.status === 'locked') return { text: `${letter} — already banked`, color: tone.green };
+    if (s.status === 'no-remaining')
+      return { text: `${letter} — nothing left that could change it`, color: tone.amberText };
+    if (s.status === 'impossible' || s.status === 'stretch')
+      return { text: `${letter} — out of reach now`, color: tone.red };
+    return {
+      text: `${letter} — ${fmtPct(s.needed)} on the ${s.remainingCount} left`,
+      color: colors.ink,
+    };
+  };
+
+  const d = detail();
+
+  return (
+    <button
+      onClick={() => navigate(`grades/${row.id}`)}
+      style={{
+        width: '100%',
+        textAlign: 'left',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '9px 0',
+      }}
+    >
+      <CourseDot color={course?.color} size={8} />
+      <span
+        style={{
+          font: `600 13px ${fonts.sans}`,
+          color: colors.ink,
+          flex: 1,
+          minWidth: 0,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {course?.code || course?.name}
+      </span>
+      <span style={{ font: `500 11px ${fonts.sans}`, color: colors.faint, flexShrink: 0 }}>
+        {row.currentLetter ?? '—'}
+      </span>
+      <span
+        style={{ font: `600 12px ${fonts.sans}`, color: d.color, flexShrink: 0, textAlign: 'right' }}
+      >
+        {d.text}
+      </span>
+    </button>
   );
 }
 

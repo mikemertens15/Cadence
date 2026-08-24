@@ -14,7 +14,7 @@ import { dayStr } from '../dates';
 // took before this app existed — so "load only the active term" buys nothing.
 //
 // The dataset is small enough to make that easy: six courses a term, a few
-// hundred assignments a year. It all arrives in nine queries on sign-in.
+// hundred assignments a year. It all arrives in ten queries on sign-in.
 //
 // Rows travel in database shape (`points_possible`, not `pointsPossible`). The
 // grading engine reads them directly, and a translation layer in between would
@@ -34,6 +34,7 @@ const TABLES = [
   ['priorTerms', 'prior_terms'],
   ['degreePlans', 'degree_plan'],
   ['breaks', 'term_breaks'],
+  ['creditApplications', 'credit_applications'],
 ];
 
 const EMPTY = {
@@ -46,6 +47,7 @@ const EMPTY = {
   priorTerms: [],
   degreePlans: [],
   breaks: [],
+  creditApplications: [],
 };
 
 export function useSemester() {
@@ -53,6 +55,13 @@ export function useSemester() {
   if (!ctx) throw new Error('useSemester must be used inside <SemesterProvider>');
   return ctx;
 }
+
+// A client-side id, used only to stamp a batch of assignments as one series.
+// Postgres would happily generate it, but the whole batch needs the *same* one
+// and a default would give each row its own.
+const newId = () =>
+  globalThis.crypto?.randomUUID?.() ??
+  `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 const groupBy = (rows, key) => {
   const map = new Map();
@@ -268,9 +277,51 @@ export function SemesterProvider({ children }) {
     [priorTerms],
   );
 
-  // One row per user, enforced by a unique constraint — so the list is either
-  // empty or a single element, and null means "never set up".
-  const degreePlan = rows.degreePlans[0] ?? null;
+  /**
+   * What you're working toward — a list since 1.0, and that is the point.
+   *
+   * A second degree, a master's on top of it and a minor are three different
+   * denominators, and the single row this used to be could only ever describe
+   * one of them. `primaryProgram` is what a new course is applied to by default:
+   * the first active one, so the ordinary case stays a thing you never touch.
+   */
+  const programs = useMemo(
+    () =>
+      [...rows.degreePlans].sort(
+        (a, b) => a.position - b.position || String(a.created_at).localeCompare(String(b.created_at)),
+      ),
+    [rows.degreePlans],
+  );
+
+  const primaryProgram = useMemo(
+    () => programs.find((p) => p.status === 'active') ?? programs[0] ?? null,
+    [programs],
+  );
+
+  // course id → the programs it counts toward, and the same for prior terms.
+  // Both sides are needed: the course list draws its chips from the first, and
+  // the ledger walks every credit source through the second.
+  const programIdsByCourse = useMemo(() => {
+    const map = new Map();
+    for (const r of rows.creditApplications) {
+      if (!r.course_id) continue;
+      const list = map.get(r.course_id);
+      if (list) list.push(r.plan_id);
+      else map.set(r.course_id, [r.plan_id]);
+    }
+    return map;
+  }, [rows.creditApplications]);
+
+  const programIdsByPriorTerm = useMemo(() => {
+    const map = new Map();
+    for (const r of rows.creditApplications) {
+      if (!r.prior_term_id) continue;
+      const list = map.get(r.prior_term_id);
+      if (list) list.push(r.plan_id);
+      else map.set(r.prior_term_id, [r.plan_id]);
+    }
+    return map;
+  }, [rows.creditApplications]);
 
   const breaks = useMemo(() => {
     const list = activeTerm ? rows.breaks.filter((b) => b.term_id === activeTerm.id) : [];
@@ -343,7 +394,20 @@ export function SemesterProvider({ children }) {
    * a half-built course is the thing most likely to be abandoned.
    */
   const createCourse = useCallback(
-    async ({ termId: term, name, code, instructor, creditHours, color, location, meetings: mtgs = [], categories: cats = [] }) => {
+    async ({
+      termId: term,
+      name,
+      code,
+      instructor,
+      creditHours,
+      color,
+      location,
+      gradingBasis,
+      status,
+      meetings: mtgs = [],
+      categories: cats = [],
+      programIds,
+    }) => {
       const { data: course, error: err } = await supabase
         .from('courses')
         .insert({
@@ -354,6 +418,8 @@ export function SemesterProvider({ children }) {
           credit_hours: creditHours,
           color,
           location: location?.trim() || null,
+          grading_basis: gradingBasis ?? 'graded',
+          status: status ?? 'enrolled',
         })
         .select()
         .single();
@@ -387,10 +453,21 @@ export function SemesterProvider({ children }) {
         );
       }
 
+      // Which degree this counts toward, defaulted by the caller to whichever
+      // one you're mainly doing. An explicit empty list is a real answer — it
+      // means a class taken for interest — so it is honoured rather than
+      // treated as "nothing supplied, use the default".
+      const applied = programIds ?? (primaryProgram ? [primaryProgram.id] : []);
+      if (applied.length) {
+        await supabase
+          .from('credit_applications')
+          .insert(applied.map((planId) => ({ plan_id: planId, course_id: course.id })));
+      }
+
       await fetchAll();
       return course;
     },
-    [fetchAll],
+    [fetchAll, primaryProgram],
   );
 
   const updateCourse = useCallback(
@@ -482,24 +559,66 @@ export function SemesterProvider({ children }) {
     [fetchAll],
   );
 
+  // One shape for both the single insert and the bulk one, so a fourteen-week
+  // batch cannot drift from what a hand-typed row looks like.
+  const assignmentRow = ({
+    courseId,
+    categoryId,
+    title,
+    dueAt,
+    pointsPossible,
+    notes,
+    kind,
+    durationMin,
+    countsTowardGrade,
+    seriesId,
+  }) => ({
+    course_id: courseId,
+    category_id: categoryId ?? null,
+    title: title?.trim() || 'Untitled',
+    due_at: dueAt ?? null,
+    points_possible: pointsPossible ?? 100,
+    notes: notes?.trim() || null,
+    kind: kind ?? 'assignment',
+    duration_min: durationMin ?? null,
+    counts_toward_grade: countsTowardGrade !== false,
+    series_id: seriesId ?? null,
+  });
+
   const createAssignment = useCallback(
-    ({ courseId, categoryId, title, dueAt, pointsPossible, notes, kind, durationMin }) =>
-      run(
+    (fields) => run(supabase.from('assignments').insert(assignmentRow(fields)).select().single()),
+    [run],
+  );
+
+  /**
+   * A whole run of work in one insert.
+   *
+   * "Homework 1 through 14, due every Friday" is one decision, and typing it out
+   * fourteen times is the single most tedious thing this app has ever asked
+   * anyone to do. They are ordinary assignments from the moment they exist —
+   * the shared `series_id` only exists so the batch can be un-made when the
+   * syllabus turns out to say Wednesday.
+   *
+   * One statement rather than fourteen: a partial failure halfway through a loop
+   * would leave a mess nobody could see the shape of, and the refetch afterwards
+   * would flicker through seven of them.
+   */
+  const createAssignments = useCallback(
+    (items) => {
+      if (!items?.length) return null;
+      const seriesId = items.length > 1 ? newId() : null;
+      return run(
         supabase
           .from('assignments')
-          .insert({
-            course_id: courseId,
-            category_id: categoryId ?? null,
-            title: title.trim() || 'Untitled',
-            due_at: dueAt ?? null,
-            points_possible: pointsPossible ?? 100,
-            notes: notes?.trim() || null,
-            kind: kind ?? 'assignment',
-            duration_min: durationMin ?? null,
-          })
-          .select()
-          .single(),
-      ),
+          .insert(items.map((it) => assignmentRow({ ...it, seriesId })))
+          .select(),
+      );
+    },
+    [run],
+  );
+
+  const deleteSeries = useCallback(
+    (seriesId) => run(supabase.from('assignments').delete().eq('series_id', seriesId)),
     [run],
   );
 
@@ -544,8 +663,8 @@ export function SemesterProvider({ children }) {
   // ------------------------------------------------------ history & degree
 
   const createPriorTerm = useCallback(
-    ({ name, creditHours, gpa }) =>
-      run(
+    async ({ name, creditHours, gpa, programIds }) => {
+      const created = await run(
         supabase
           .from('prior_terms')
           .insert({
@@ -556,8 +675,22 @@ export function SemesterProvider({ children }) {
           })
           .select()
           .single(),
-      ),
-    [run, rows.priorTerms.length],
+      );
+
+      // Old credits count toward the degree by default, because that is what
+      // they were for. The exception — the semester of a major you changed out
+      // of — is a second row, which is also how you'd have to say it if the
+      // GPAs differ.
+      const applied = programIds ?? (primaryProgram ? [primaryProgram.id] : []);
+      if (created && applied.length) {
+        await supabase
+          .from('credit_applications')
+          .insert(applied.map((planId) => ({ plan_id: planId, prior_term_id: created.id })));
+        await fetchAll();
+      }
+      return created;
+    },
+    [run, fetchAll, rows.priorTerms.length, primaryProgram],
   );
 
   const updatePriorTerm = useCallback(
@@ -577,31 +710,111 @@ export function SemesterProvider({ children }) {
   );
 
   /**
-   * Save the degree goal.
+   * Add a program.
    *
-   * Upsert on user_id rather than "look it up, then insert or update": the
-   * unique constraint already says there is at most one, so letting Postgres
-   * decide which it is removes the race where two devices both find nothing and
-   * both insert.
+   * A plain insert since 1.0 — the unique-on-user constraint that made this an
+   * upsert is gone, because "at most one degree" was the assumption the release
+   * exists to remove.
+   *
+   * New programs land at the end of the list rather than sorted by anything:
+   * the order these are drawn in is "the one you're mainly doing, then the
+   * others", and only the person doing them knows which that is.
    */
-  const saveDegreePlan = useCallback(
-    ({ name, creditsRequired, gpaGoal }) =>
-      run(
+  const createProgram = useCallback(
+    async ({ name, kind, level, creditsRequired, gpaGoal, status }) => {
+      const first = rows.degreePlans.length === 0;
+
+      const created = await run(
         supabase
           .from('degree_plan')
-          .upsert(
-            {
-              user_id: userId,
-              name: name?.trim() || null,
-              credits_required: creditsRequired,
-              gpa_goal: gpaGoal ?? null,
-            },
-            { onConflict: 'user_id' },
-          )
+          .insert({
+            name: name?.trim() || null,
+            kind: kind ?? 'degree',
+            level: level ?? 'undergraduate',
+            credits_required: creditsRequired,
+            gpa_goal: gpaGoal ?? null,
+            status: status ?? 'active',
+            position: rows.degreePlans.length,
+          })
           .select()
           .single(),
-      ),
-    [run, userId],
+      );
+
+      // The *first* program inherits everything you've already got, because
+      // with one program "all of it counts toward this" is what the app has
+      // always meant — and a brand-new bar reading 0% next to four years of
+      // credits is both wrong and the sort of wrong that makes you stop
+      // trusting the number.
+      //
+      // Only the first. Adding a master's later must not claim every
+      // undergraduate course as its own; from the second one on, you say which.
+      if (created && first) {
+        const links = [
+          ...rows.courses.map((c) => ({ plan_id: created.id, course_id: c.id })),
+          ...rows.priorTerms.map((t) => ({ plan_id: created.id, prior_term_id: t.id })),
+        ];
+        if (links.length) {
+          await supabase.from('credit_applications').insert(links);
+          await fetchAll();
+        }
+      }
+
+      return created;
+    },
+    [run, fetchAll, rows.degreePlans.length, rows.courses, rows.priorTerms],
+  );
+
+  const updateProgram = useCallback(
+    (id, patch) => {
+      patchLocal('degreePlans', id, patch);
+      return run(supabase.from('degree_plan').update(patch).eq('id', id));
+    },
+    [run, patchLocal],
+  );
+
+  // Cascades to the credit_applications rows pointing at it, which is right:
+  // those rows say "this course counts toward that program", and without the
+  // program there is no claim left to make. The courses themselves are
+  // untouched — deleting a degree has never been a reason to lose a semester.
+  const deleteProgram = useCallback(
+    (id) => {
+      dropLocal('degreePlans', id);
+      return run(supabase.from('degree_plan').delete().eq('id', id));
+    },
+    [run, dropLocal],
+  );
+
+  /**
+   * Which programs a course (or a lump of prior credits) counts toward.
+   *
+   * Replaced wholesale rather than diffed. Nothing references these rows — they
+   * *are* the reference — so there is nothing a delete could orphan, and a
+   * course is applied to two programs at the most.
+   */
+  const setCreditApplications = useCallback(
+    async (key, id, planIds) => {
+      const column = key === 'course' ? 'course_id' : 'prior_term_id';
+      await supabase.from('credit_applications').delete().eq(column, id);
+
+      const ids = [...new Set(planIds ?? [])];
+      if (ids.length) {
+        await supabase
+          .from('credit_applications')
+          .insert(ids.map((planId) => ({ plan_id: planId, [column]: id })));
+      }
+      await fetchAll();
+    },
+    [fetchAll],
+  );
+
+  const setCoursePrograms = useCallback(
+    (courseId, planIds) => setCreditApplications('course', courseId, planIds),
+    [setCreditApplications],
+  );
+
+  const setPriorTermPrograms = useCallback(
+    (priorTermId, planIds) => setCreditApplications('prior', priorTermId, planIds),
+    [setCreditApplications],
   );
 
   const createBreak = useCallback(
@@ -656,9 +869,16 @@ export function SemesterProvider({ children }) {
     scaleByCourse,
     priorTerms,
     priorCredits,
-    degreePlan,
+    programs,
+    primaryProgram,
+    programIdsByCourse,
+    programIdsByPriorTerm,
     breaks,
     breakOn,
+    // The raw tables, for the one caller that wants exactly what is stored
+    // rather than anything derived: the backup. Deliberately last and
+    // deliberately named — everything else in here is shaped for a screen.
+    rawRows: rows,
     createTerm,
     updateTerm,
     deleteTerm,
@@ -669,13 +889,19 @@ export function SemesterProvider({ children }) {
     setCategories,
     setScale,
     createAssignment,
+    createAssignments,
     updateAssignment,
     deleteAssignment,
+    deleteSeries,
     setScore,
     createPriorTerm,
     updatePriorTerm,
     deletePriorTerm,
-    saveDegreePlan,
+    createProgram,
+    updateProgram,
+    deleteProgram,
+    setCoursePrograms,
+    setPriorTermPrograms,
     createBreak,
     updateBreak,
     deleteBreak,

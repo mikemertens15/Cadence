@@ -1,8 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { gradeCourse, neededOnRemaining, gpaFor, degreeProgress } from '../src/grading/engine.js';
-import { letterFor, gradePoints, PLUS_MINUS_SCALE, scaleFor } from '../src/grading/scale.js';
+import {
+  gradeCourse,
+  neededOnRemaining,
+  gpaFor,
+  degreeProgress,
+  courseStanding,
+  summarizeCredits,
+  termGpaPlan,
+} from '../src/grading/engine.js';
+import { letterFor, gradePoints, DEFAULT_SCALE, PLUS_MINUS_SCALE, scaleFor } from '../src/grading/scale.js';
 
 // The grade is the one number in this app that a person will make decisions on:
 // whether to keep studying, whether to drop, whether the A is still live. Every
@@ -459,4 +467,240 @@ test('the two bar segments never sum past the whole', () => {
   // 110 earned of 120 leaves room for 10; a 16-credit term must not draw 16.
   const d = degreeProgress({ creditsRequired: 120, priorCredits: 110, inProgressCredits: 16 });
   assert.ok(d.share.earned + d.share.inProgress <= 100 + 1e-9);
+});
+
+// ------------------------------------------------ work that isn't graded
+
+test('work the course does not grade stays out of the grade entirely', () => {
+  // 90/100 on the graded homework; the two practice sets are invisible, so the
+  // grade is 90 — not 90 diluted by two zeroes and not 90 with a warning
+  // attached about assignments that "aren't in a category".
+  const g = gradeCourse({
+    categories: [cat('h', 'Homework', 100)],
+    assignments: [
+      item('a1', 'h', 100, 90),
+      item('p1', null, 100, null, { counts_toward_grade: false }),
+      item('p2', null, 100, null, { counts_toward_grade: false }),
+    ],
+  });
+  close(g.pct, 90);
+  assert.equal(g.notCountedCount, 2);
+  // The distinction the column exists for: not-graded work is not a filing gap.
+  assert.equal(g.uncategorizedCount, 0);
+});
+
+test('ungraded work is not counted as work still ahead of you', () => {
+  const g = gradeCourse({
+    categories: [cat('h', 'Homework', 100)],
+    assignments: [item('a1', 'h', 100, 90), item('p1', 'h', 100, null, { counts_toward_grade: false })],
+  });
+  assert.equal(g.remainingCount, 0);
+  close(g.pct, 90);
+});
+
+test('the solver does not project scores onto work nobody will grade', () => {
+  // One graded 80/100 and one practice set. Acing "everything left" must be 80,
+  // because there is nothing left — the practice set cannot lift the grade.
+  const solved = neededOnRemaining(
+    {
+      categories: [cat('h', 'Homework', 100)],
+      assignments: [
+        item('a1', 'h', 100, 80),
+        item('p1', 'h', 100, null, { counts_toward_grade: false }),
+      ],
+    },
+    90,
+  );
+  close(solved.ceiling, 80);
+  assert.equal(solved.remainingCount, 0);
+  assert.equal(solved.status, 'no-remaining');
+});
+
+// -------------------------------------------- what a course actually earns
+
+test('a pass/fail course earns credit and no grade points', () => {
+  const s = courseStanding({ grading_basis: 'pass_fail' });
+  assert.equal(s.earnsCredit, true);
+  assert.equal(s.earnsGradePoints, false);
+});
+
+test('an audited course earns neither, and a withdrawal earns neither', () => {
+  assert.deepEqual(courseStanding({ grading_basis: 'audit' }).earnsCredit, false);
+  assert.deepEqual(courseStanding({ grading_basis: 'audit' }).earnsGradePoints, false);
+  assert.deepEqual(courseStanding({ status: 'withdrawn' }).earnsCredit, false);
+  assert.deepEqual(courseStanding({ status: 'withdrawn' }).earnsGradePoints, false);
+  // A withdrawal wins over the basis: withdrawing from a pass/fail course still
+  // earns nothing.
+  assert.equal(courseStanding({ grading_basis: 'pass_fail', status: 'withdrawn' }).earnsCredit, false);
+});
+
+test('rows written before the columns existed are ordinary graded courses', () => {
+  const s = courseStanding({});
+  assert.equal(s.earnsCredit, true);
+  assert.equal(s.earnsGradePoints, true);
+});
+
+test('pass/fail and audited courses leave the GPA alone', () => {
+  // 4.0 × 3 credits is the only thing in it. The pass/fail A and the audited A
+  // must not move a 4.0, and must not be reported as "no graded work yet"
+  // either — they are not waiting on anything.
+  const g = gpaFor([
+    { creditHours: 3, letter: 'A' },
+    { creditHours: 4, letter: 'A', grading_basis: 'pass_fail' },
+    { creditHours: 3, letter: 'A', grading_basis: 'audit' },
+    { creditHours: 3, letter: 'F', status: 'withdrawn' },
+  ]);
+  close(g.gpa, 4);
+  close(g.credits, 3);
+  assert.equal(g.counted, 1);
+  assert.equal(g.excluded, 3);
+  assert.equal(g.ungraded, 0);
+});
+
+// ------------------------------------------------------------ the ledger
+
+test('a shared course advances both programs and is counted once in the total', () => {
+  // Calculus counts toward both degrees; the film class counts toward neither.
+  //   total     4 + 3 + 3 + 3 = 13
+  //   BSME      4 (calc) + 3 (mech)          = 7
+  //   MS        4 (calc) + 3 (grad, ongoing) = 7
+  //   7 + 7 = 14, which is one course's 4 credits counted twice — hence
+  //   `shared`, so the discrepancy is stated rather than discovered.
+  const ledger = summarizeCredits({
+    programs: [{ id: 'bs' }, { id: 'ms' }],
+    entries: [
+      { credits: 4, programIds: ['bs', 'ms'], state: 'earned' },
+      { credits: 3, programIds: ['bs'], state: 'earned' },
+      { credits: 3, programIds: ['ms'], state: 'inProgress' },
+      { credits: 3, programIds: [], state: 'earned' },
+    ],
+  });
+
+  close(ledger.total, 13);
+  close(ledger.earned, 10);
+  close(ledger.inProgress, 3);
+  close(ledger.applied, 10);
+  close(ledger.unapplied, 3);
+  close(ledger.shared, 4);
+  close(ledger.byProgram.get('bs').earned, 7);
+  close(ledger.byProgram.get('ms').earned, 4);
+  close(ledger.byProgram.get('ms').inProgress, 3);
+});
+
+test('audited and withdrawn hours are held apart from credits earned', () => {
+  const ledger = summarizeCredits({
+    programs: [{ id: 'bs' }],
+    entries: [
+      { credits: 3, programIds: ['bs'], state: 'earned' },
+      { credits: 3, programIds: ['bs'], state: 'earned', earnsCredit: false },
+    ],
+  });
+  close(ledger.total, 3);
+  close(ledger.noCredit, 3);
+  close(ledger.byProgram.get('bs').earned, 3);
+});
+
+test('credits you have only registered for are in neither column yet', () => {
+  const ledger = summarizeCredits({
+    programs: [{ id: 'bs' }],
+    entries: [{ credits: 15, programIds: ['bs'], state: 'future' }],
+  });
+  close(ledger.total, 0);
+  close(ledger.byProgram.get('bs').earned, 0);
+});
+
+test('credits pointed at a program that no longer exists are unapplied, not lost', () => {
+  const ledger = summarizeCredits({
+    programs: [{ id: 'bs' }],
+    entries: [{ credits: 3, programIds: ['deleted'], state: 'earned' }],
+  });
+  close(ledger.total, 3);
+  close(ledger.unapplied, 3);
+});
+
+// ------------------------------------------------------- the term as a whole
+
+test('the term solver says what each course needs if the others hold', () => {
+  // A 3-credit B (9 quality points) and a 4-credit course with no grade yet,
+  // aiming at a 3.5 term.
+  //   the ungraded course: (3.5 × 7 − 9) / 4 = 15.5 / 4 = 3.875 → 4.0 → an A
+  //   the B:               nothing else is graded, so (3.5 × 3 − 0) / 3 = 3.5 → an A
+  const plan = termGpaPlan(
+    [
+      { id: 'a', creditHours: 3, letter: 'B' },
+      { id: 'b', creditHours: 4, letter: null },
+    ],
+    3.5,
+  );
+
+  const b = plan.courses.find((c) => c.id === 'b');
+  close(b.exactPoints, 3.875);
+  assert.equal(b.neededPoints, 4);
+  assert.equal(b.neededLetter, 'A');
+  assert.equal(b.neededPct, 90);
+  assert.equal(b.status, 'reachable');
+
+  const a = plan.courses.find((c) => c.id === 'a');
+  assert.equal(a.neededPoints, 4);
+  // The term as it stands is one 3-credit B.
+  close(plan.gpa, 3);
+  assert.equal(plan.met, false);
+});
+
+test('a course already carrying the target needs nothing from you', () => {
+  // Two 3-credit A's against a 2.0 target: (2 × 6 − 12) / 3 = 0.
+  const plan = termGpaPlan(
+    [
+      { id: 'a', creditHours: 3, letter: 'A' },
+      { id: 'b', creditHours: 3, letter: 'A' },
+    ],
+    2,
+  );
+  assert.equal(plan.courses[0].status, 'locked');
+  assert.equal(plan.courses[0].neededPoints, 0);
+  assert.equal(plan.met, true);
+});
+
+test('a target no single course can rescue says so', () => {
+  // A 3-credit F against a 1-credit course, aiming at 3.5:
+  //   (3.5 × 4 − 0) / 1 = 14 grade points, and 4.0 is the ceiling.
+  const plan = termGpaPlan(
+    [
+      { id: 'a', creditHours: 3, letter: 'F' },
+      { id: 'b', creditHours: 1, letter: null },
+    ],
+    3.5,
+  );
+  const b = plan.courses.find((c) => c.id === 'b');
+  assert.equal(b.status, 'impossible');
+  close(b.exactPoints, 14);
+});
+
+test('on a plus/minus scale the target is the easier letter worth the same', () => {
+  // 4.0 is needed either way, but on a plus/minus scale the lowest letter worth
+  // 4.0 is an A-, and telling someone they need an A when an A- does it is a
+  // harder target than the one they actually face.
+  const plan = termGpaPlan(
+    [{ id: 'a', creditHours: 3, letter: 'B', scale: PLUS_MINUS_SCALE }],
+    3.6,
+  );
+  assert.equal(plan.courses[0].neededPoints, 4);
+  assert.equal(plan.courses[0].neededLetter, 'A-');
+  assert.equal(plan.courses[0].neededPct, 90);
+
+  const straight = termGpaPlan([{ id: 'a', creditHours: 3, letter: 'B', scale: DEFAULT_SCALE }], 3.6);
+  assert.equal(straight.courses[0].neededLetter, 'A');
+});
+
+test('a pass/fail course is not given a letter to hit', () => {
+  const plan = termGpaPlan(
+    [
+      { id: 'a', creditHours: 3, letter: 'B' },
+      { id: 'lab', creditHours: 1, letter: 'A', grading_basis: 'pass_fail' },
+    ],
+    3.5,
+  );
+  assert.equal(plan.courses.length, 1);
+  assert.equal(plan.courses[0].id, 'a');
+  assert.equal(plan.excluded, 1);
 });

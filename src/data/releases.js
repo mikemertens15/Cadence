@@ -8,6 +8,45 @@
 
 export const RELEASES = [
   {
+    version: '1.0.0',
+    date: '2026-08-24',
+    name: 'A semester you can actually run',
+    notes: [
+      [
+        'fixed',
+        'Homework that nobody grades. Some professors hand out problem sets "for your own benefit" and collect nothing \u2014 you still need the due date, because you still have to do it before Thursday\u2019s lecture stops making sense. The only way to say that used to be leaving the category blank, which is the same state as "I haven\u2019t filed this yet", so the grades page nagged about it in amber forever. Not graded is now a real answer: the points field goes away, the grade ignores it completely, and it still sits in your work list with its date on it.',
+      ],
+      [
+        'added',
+        'The kind of work now picks the category. Choosing "Quiz" and then choosing "Quizzes" was the same decision twice, and the second one is the one you skip \u2014 which is how a quiz ends up outside the grade entirely. It goes on what you did last time in that course first, the names on the syllabus second, and it says which underneath so a wrong guess is a wrong guess you can see. A course whose syllabus reads Exams 60 / Final 40 has no home for a problem set, and it now says so rather than guessing at one.',
+      ],
+      [
+        'added',
+        'A run of work in one go. "Problem sets due Fridays for fourteen weeks" is one decision and fourteen rows, and typing it fourteen times was the most tedious thing this app had ever asked for. Pick weekly, say how many, and they arrive numbered from wherever your title left off \u2014 type "Problem Set 3" and get 3 through 16. If the syllabus turns out to say Wednesday, the whole batch comes back out in one click.',
+      ],
+      [
+        'added',
+        'More than one thing to work toward. A second degree, a master\u2019s, a minor, and the classes taken because they looked interesting are four different denominators \u2014 and "169 credits out of 120" is not a sentence about any of them. Each program gets its own bar, its own credit total and its own GPA, because a graduate GPA is genuinely a separate number and blending it into an undergraduate one reports neither correctly.',
+      ],
+      [
+        'added',
+        'Credits that count toward two things at once. Gen eds are the reason: Calculus I is on the mechanical engineering audit and on the second degree\u2019s, one course and one grade advancing two bars. So a course is applied to however many programs it belongs to \u2014 or to none, which is the honest way to record a class taken for interest. Shared credits are counted once in your total and named as shared, rather than left as an inconsistency between two numbers that should have matched.',
+      ],
+      [
+        'added',
+        'Pass/fail, audits and withdrawals. A pass/fail lab earns credit and no grade points, an audit earns neither, and a W is not an F \u2014 scoring the 41% you were carrying when you dropped would have been the most misleading number this app was capable of showing. All three now behave, and the GPA note says how many courses are sitting out and why, separately from the ones simply waiting on a grade.',
+      ],
+      [
+        'added',
+        'What each class needs for the term to land where you want it. The course page has always answered "what do I need on the work left here"; this is that question asked of five courses at once. Every line assumes the others finish where they stand today \u2014 stated out loud, because a plan that quietly falls apart when one number moves is worse than no plan \u2014 and it chains straight through: Heat Transfer needs a B, which is 88% on the four assignments left.',
+      ],
+      [
+        'added',
+        'Your data, in your hands. A full JSON backup of every row, and the gradebook as a CSV with the course and category names spelled out. A year of scores living behind someone else\u2019s login with no way to take a copy was a fine trade for a weekend project and a bad one for the thing you\u2019re running a degree on. Under Settings \u2192 Data.',
+      ],
+    ],
+  },
+  {
     version: '0.3.0',
     date: '2026-08-21',
     name: 'The rest of the semester',
