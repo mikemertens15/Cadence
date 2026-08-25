@@ -21,6 +21,14 @@ const initialParams = new URLSearchParams(initialHash);
 const CAME_FROM_RECOVERY = initialParams.get('type') === 'recovery';
 const INITIAL_LINK_ERROR = initialParams.get('error_description') || '';
 
+// How close to expiry an access token has to be before it's treated as already
+// dead. Thirty seconds: a token with ten left will expire somewhere in the
+// middle of the ten reads the app opens with, which fails half of them.
+const STALE_MS = 30_000;
+
+const isStale = (s) =>
+  typeof s?.expires_at === 'number' && s.expires_at * 1000 - Date.now() < STALE_MS;
+
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used inside <AuthProvider>');
@@ -39,18 +47,46 @@ export function AuthProvider({ children }) {
   const [linkError, setLinkError] = useState(INITIAL_LINK_ERROR);
 
   useEffect(() => {
-    // getSession() waits for the client to finish parsing any link in the URL,
-    // so this resolves with the recovery session already in hand.
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session ?? null);
-      setLoading(false);
-    });
+    let cancelled = false;
+
+    (async () => {
+      // getSession() waits for the client to finish parsing any link in the
+      // URL, so this resolves with the recovery session already in hand.
+      const { data } = await supabase.auth.getSession();
+      let sess = data.session ?? null;
+
+      // An access token lives an hour, and a tab that has been shut since last
+      // night wakes up holding a dead one. getSession() hands that straight
+      // back and starts a refresh in the background — so the ten reads this app
+      // opens with went out carrying an expired JWT, came back 401, and landed
+      // on "Couldn't load your semester" nearly every morning.
+      //
+      // Waiting for the refresh here costs one round trip on a cold open and
+      // means nothing downstream ever sees a token that has already expired.
+      if (isStale(sess)) {
+        const { data: fresh, error } = await supabase.auth.refreshSession();
+        // A refresh token that the server no longer has — rotated away, or from
+        // a project that was reset — is not a loading problem, it's a signed-out
+        // one. Saying so sends you to the sign-in screen, which is the thing
+        // that actually fixes it, rather than to a data screen that can't load
+        // and can't explain why.
+        sess = error ? null : (fresh.session ?? null);
+      }
+
+      if (!cancelled) {
+        setSession(sess);
+        setLoading(false);
+      }
+    })();
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
       setSession(sess ?? null);
       if (event === 'PASSWORD_RECOVERY') setRecovering(true);
     });
-    return () => sub.subscription.unsubscribe();
+    return () => {
+      cancelled = true;
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
   // Passwordless: emails a one-click link that redirects back here. Doubles as

@@ -32,6 +32,14 @@ export const RELEASES = [
         'fixed',
         'A timer left running through dinner would have been the most misleading number this app is capable of showing, in the same way scoring a withdrawal as the 41% you were carrying would be. Half an hour past the length you set, the block stops taking its own clock at face value and asks which of the two numbers actually happened. A block stopped within a minute of starting is treated as the misclick it is and not logged at all.',
       ],
+      [
+        'fixed',
+        'Opening Cadence and being told it couldn’t load your semester, then having it load perfectly the moment you pressed Try again. Your sign-in lasts an hour, so a tab that has been shut since last night wakes up holding a key that expired while you were asleep — and the app went ahead and used it anyway, for all ten reads, before waiting to be handed the new one. It now waits. And if a read does fail on a dead key, signing in or renewing quietly re-runs it, because the thing that always fixed this was a fresh key the app already had and no reason to go back and use.',
+      ],
+      [
+        'fixed',
+        'The same quiz, twice, on the night before it. The banner at the top reaches into tomorrow once today is done, and the exam strip underneath was only checking what was left of today — so a 9am quiz was both the headline and the reminder under it. Now it’s only the headline, and the headline itself opens the quiz: tap it to move the time or fix the name, which is the one thing the little strip was still good for.',
+      ],
     ],
   },
   {

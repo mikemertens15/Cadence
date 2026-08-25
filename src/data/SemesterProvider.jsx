@@ -80,6 +80,20 @@ export function SemesterProvider({ children }) {
   const { session } = useAuth();
   const userId = session?.user?.id ?? null;
 
+  /**
+   * The token, and not just who it belongs to.
+   *
+   * Every read below is keyed on this rather than on `userId`, because a token
+   * is the thing a read can fail on and the user id is not. A refresh — or a
+   * sign-in straight after a refresh that failed — issues a brand new access
+   * token while the id stays byte-for-byte the same, so a provider watching
+   * only the id has no reason to re-run the reads that just died on the old
+   * one. That is exactly what left "Couldn't load your semester" sitting on
+   * screen with a working token already in hand, waiting for someone to press
+   * Try again: the app had everything it needed and no trigger to use it.
+   */
+  const accessToken = session?.access_token ?? null;
+
   const [rows, setRows] = useState(EMPTY);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -88,6 +102,9 @@ export function SemesterProvider({ children }) {
   // terms" is the whole difference between showing someone their semester and
   // showing them a first-run wizard over the top of it — see the gate in App.
   const [loaded, setLoaded] = useState(false);
+  // The same fact as `loaded`, kept where an effect can read it without taking
+  // it as a dependency and re-running itself the moment it flips.
+  const everLoaded = useRef(false);
   const [termId, setTermIdState] = useState(() => {
     try {
       return localStorage.getItem(TERM_KEY);
@@ -97,9 +114,15 @@ export function SemesterProvider({ children }) {
   });
 
   const fetchAll = useCallback(async () => {
-    if (!userId) {
+    // No token is not the same as no data, but it is the same as nothing to
+    // read: a signed-out client can only produce 401s.
+    if (!userId || !accessToken) {
       setRows(EMPTY);
       setLoaded(false);
+      // Signing out un-loads the app: the next sign-in is a first read again,
+      // and it gets the splash rather than a flash of "couldn't load" while the
+      // rows are on their way.
+      everLoaded.current = false;
       setLoading(false);
       return;
     }
@@ -134,11 +157,16 @@ export function SemesterProvider({ children }) {
     setError('');
     setRows(Object.fromEntries(TABLES.map(([key], i) => [key, results[i].data ?? []])));
     setLoaded(true);
+    everLoaded.current = true;
     setLoading(false);
-  }, [userId]);
+  }, [userId, accessToken]);
 
   useEffect(() => {
-    setLoading(true);
+    // Only a first read blocks the app on the splash screen. Now that a token
+    // refresh re-runs this — roughly hourly, and that is the point — blanking
+    // the whole app to re-read rows already on screen would trade a silent
+    // background refetch for a flash of the loading screen every hour.
+    if (!everLoaded.current) setLoading(true);
     fetchAll();
   }, [fetchAll]);
 

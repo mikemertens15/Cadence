@@ -89,6 +89,18 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
     return null;
   }, [current, next, now, blocksOn]);
 
+  /**
+   * The block the hero card is about.
+   *
+   * Chosen here rather than inside NextUp, so the strip underneath can know
+   * what the card above it is already showing. The two picking separately is
+   * what put the same quiz on the screen twice: the strip checked today's
+   * current and next block, and the hero card reaches into tomorrow when today
+   * is done — so the night before a quiz, it was the headline *and* the
+   * reminder underneath it.
+   */
+  const heroBlock = current ?? next ?? upcoming?.blocks?.[0] ?? null;
+
   // The day the list below shows: today while it still has anything on it,
   // otherwise the next day that does.
   const shown = today.blocks.length
@@ -141,6 +153,7 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
       <Greeting now={now} phone={phone} />
 
       <NextUp
+        block={heroBlock}
         current={current}
         next={next}
         upcoming={upcoming}
@@ -148,11 +161,14 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
         nowMinutes={nowMinutes}
         blocksToday={today.blocks.length}
         phone={phone}
+        onOpenEvent={onOpenAssignment}
       />
 
       {/* Only worth its space once it's genuinely ahead of you and not already
-          the thing filling the card above. */}
-      {nextExam && nextExam.a.id !== current?.event?.id && nextExam.a.id !== next?.event?.id && (
+          the thing filling the card above — whichever day that card reached
+          into to find it. When it *is* the card above, the card itself opens
+          it, so nothing is lost by dropping the second copy. */}
+      {nextExam && nextExam.a.id !== heroBlock?.event?.id && (
         <NextExam row={nextExam} course={courseById.get(nextExam.a.course_id)} onOpen={onOpenAssignment} />
       )}
 
@@ -374,9 +390,7 @@ function Greeting({ now, phone }) {
 // how long you've got. The room is the largest thing on it after the course
 // name — this is the card you look at with the phone in one hand, already
 // walking, and "AIEB 244" is the part you don't know by heart in week one.
-function NextUp({ current, next, upcoming, off, nowMinutes, blocksToday, phone }) {
-  const block = current ?? next ?? upcoming?.blocks?.[0] ?? null;
-
+function NextUp({ block, current, next, upcoming, off, nowMinutes, blocksToday, phone, onOpenEvent }) {
   if (!block) {
     return (
       <HeroCard color={{ solid: colors.accent, soft: colors.chipBg }} label={off ? 'Day off' : 'Classes'}>
@@ -408,16 +422,36 @@ function NextUp({ current, next, upcoming, off, nowMinutes, blocksToday, phone }
       ? `${event ? kindLabel(block.event.kind) : 'Next'} · in ${fmtDuration(block.start - nowMinutes)}`
       : `Next ${event ? kindLabel(block.event.kind).toLowerCase() : 'class'} · ${upcoming.label}`;
 
+  // An exam or quiz on this card is a row you might want to change — the time
+  // moved, the name was a guess, it's worth more than you thought — and before
+  // 1.1 the only way in was a second strip underneath saying the same thing.
+  // The headline opens it instead. A class isn't editable from here, so it
+  // stays a card rather than pretending to be a button.
+  const open = event && onOpenEvent && block.assignment ? () => onOpenEvent(block.assignment) : null;
+
   return (
-    <HeroCard color={c} label={label} room={block.course?.location} phone={phone}>
-      <div
-        style={{
-          font: `400 ${phone ? 21 : 24}px ${fonts.serif}`,
-          color: colors.ink,
-          lineHeight: 1.2,
-        }}
-      >
-        {event ? block.event.title : block.course.name}
+    <HeroCard color={c} label={label} room={block.course?.location} phone={phone} onClick={open}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            font: `400 ${phone ? 21 : 24}px ${fonts.serif}`,
+            color: colors.ink,
+            lineHeight: 1.2,
+          }}
+        >
+          {event ? block.event.title : block.course.name}
+        </div>
+        {/* The whole card is the target; this is only what says so. */}
+        {open && (
+          <span
+            aria-hidden="true"
+            style={{ font: `400 ${phone ? 19 : 21}px ${fonts.serif}`, color: c.solid, flexShrink: 0 }}
+          >
+            &rsaquo;
+          </span>
+        )}
       </div>
       <div style={{ font: `500 13px ${fonts.sans}`, color: colors.muted2, marginTop: 6 }}>
         <span style={{ color: c.solid, fontWeight: 600 }}>
@@ -489,13 +523,16 @@ function NextExam({ row, course, onOpen }) {
   );
 }
 
-function HeroCard({ color, label, room, children, phone }) {
+function HeroCard({ color, label, room, children, phone, onClick }) {
   return (
     <Card
+      as={onClick ? 'button' : 'div'}
+      onClick={onClick ?? undefined}
       style={{
         padding: phone ? '15px 16px' : '18px 20px',
         borderLeft: `4px solid ${color.solid}`,
         background: color.soft,
+        cursor: onClick ? 'pointer' : 'default',
       }}
     >
       <div
