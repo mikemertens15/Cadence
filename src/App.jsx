@@ -12,6 +12,7 @@ import { MobileNav } from './components/MobileNav';
 import { CourseModal } from './components/CourseModal';
 import { AssignmentModal } from './components/AssignmentModal';
 import { SettingsModal } from './components/SettingsModal';
+import { StudyModal } from './components/StudyModal';
 import { VersionChip } from './components/VersionChip';
 import { Onboarding } from './views/Onboarding';
 import { TodayView } from './views/TodayView';
@@ -147,6 +148,7 @@ function Shell() {
             onAddCourse={() => setModal({ kind: 'course' })}
             onAddAssignment={() => setModal({ kind: 'assignment' })}
             onOpenAssignment={(assignment) => setModal({ kind: 'assignment', assignment })}
+            onStartStudy={() => setModal({ kind: 'study' })}
           />
         )}
 
@@ -215,6 +217,9 @@ function Shell() {
       )}
       {modal?.kind === 'settings' && (
         <SettingsModal onClose={close} phone={phone} startOn={modal.startOn} />
+      )}
+      {modal?.kind === 'study' && (
+        <StudyModal defaultCourseId={modal.defaultCourseId} onClose={close} phone={phone} />
       )}
     </div>
   );

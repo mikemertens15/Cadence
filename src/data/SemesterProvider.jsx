@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, useCallback, useMemo, u
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../auth/AuthProvider';
 import { dayStr } from '../dates';
+import { openPauseMs, focusMinutes, MIN_LOGGED_MINUTES } from '../study';
 
 // One provider for the whole dataset, which is a deliberate departure from
 // Tend's hook-per-table arrangement.
@@ -35,6 +36,7 @@ const TABLES = [
   ['degreePlans', 'degree_plan'],
   ['breaks', 'term_breaks'],
   ['creditApplications', 'credit_applications'],
+  ['studySessions', 'study_sessions'],
 ];
 
 const EMPTY = {
@@ -48,6 +50,7 @@ const EMPTY = {
   degreePlans: [],
   breaks: [],
   creditApplications: [],
+  studySessions: [],
 };
 
 export function useSemester() {
@@ -339,6 +342,30 @@ export function SemesterProvider({ children }) {
   const breakOn = useCallback(
     (day) => breaks.find((b) => b.start_date <= day && day <= b.end_date) ?? null,
     [breaks],
+  );
+
+  // Study blocks for the term in view. Same reasoning as `assignments`: last
+  // spring's hours have no business in this week's bars.
+  const studySessions = useMemo(
+    () => rows.studySessions.filter((s) => courseIds.has(s.course_id)),
+    [rows.studySessions, courseIds],
+  );
+
+  /**
+   * The block running right now, if there is one.
+   *
+   * There is at most one, and that is a partial unique index in the schema
+   * rather than a rule this file keeps — two devices each deciding for
+   * themselves whether anything is running is exactly how an afternoon gets
+   * counted twice.
+   *
+   * Searched across every term rather than the one in view: a timer left
+   * running has to be findable from wherever you are, or it becomes a row
+   * nothing in the app can stop.
+   */
+  const runningSession = useMemo(
+    () => rows.studySessions.find((s) => !s.ended_at) ?? null,
+    [rows.studySessions],
   );
 
   // ------------------------------------------------------------- mutators
@@ -850,6 +877,124 @@ export function SemesterProvider({ children }) {
     [run, dropLocal],
   );
 
+  // ------------------------------------------------------------ study blocks
+  //
+  // Every one of these writes timestamps from *this device's* clock rather than
+  // letting Postgres default them to now(). One clock end to end: elapsed time
+  // is read here by subtracting `started_at` from the browser's own now, and a
+  // start stamped by a server running a few seconds ahead would make a timer
+  // that opens at 00:04, or worse, at minus three.
+
+  // The shape of a finished block, wherever it's finished from.
+  const closedRow = (s, now) => ({
+    ended_at: now.toISOString(),
+    // An open pause is folded in on the way out, so a stored row never carries
+    // both an end and a pause, and every finished block reads the same way.
+    paused_at: null,
+    paused_ms: (Number(s.paused_ms) || 0) + openPauseMs(s, now),
+  });
+
+  const startStudy = useCallback(
+    async ({ courseId, assignmentId = null, plannedMinutes = null }) => {
+      const now = new Date();
+
+      // A block still open when another starts was forgotten rather than
+      // stopped. Close it first: the schema only permits one, and the honest
+      // reading of a forgotten block is that it ended when you moved on.
+      const open = rows.studySessions.find((s) => !s.ended_at);
+      if (open) {
+        const patch = closedRow(open, now);
+        patchLocal('studySessions', open.id, patch);
+        await supabase.from('study_sessions').update(patch).eq('id', open.id);
+      }
+
+      return run(
+        supabase
+          .from('study_sessions')
+          .insert({
+            course_id: courseId,
+            assignment_id: assignmentId,
+            started_at: now.toISOString(),
+            planned_minutes: plannedMinutes,
+          })
+          .select()
+          .single(),
+      );
+    },
+    [rows.studySessions, run, patchLocal],
+  );
+
+  const pauseStudy = useCallback(
+    (id) => {
+      const s = rows.studySessions.find((r) => r.id === id);
+      if (!s || s.ended_at || s.paused_at) return null;
+      const patch = { paused_at: new Date().toISOString() };
+      patchLocal('studySessions', id, patch);
+      return run(supabase.from('study_sessions').update(patch).eq('id', id));
+    },
+    [rows.studySessions, run, patchLocal],
+  );
+
+  const resumeStudy = useCallback(
+    (id) => {
+      const s = rows.studySessions.find((r) => r.id === id);
+      if (!s || s.ended_at || !s.paused_at) return null;
+      const patch = {
+        paused_at: null,
+        paused_ms: (Number(s.paused_ms) || 0) + openPauseMs(s, new Date()),
+      };
+      patchLocal('studySessions', id, patch);
+      return run(supabase.from('study_sessions').update(patch).eq('id', id));
+    },
+    [rows.studySessions, run, patchLocal],
+  );
+
+  // Throwing away a block that didn't happen. The bars are only worth reading if
+  // a wrong one can be taken back out.
+  const deleteStudySession = useCallback(
+    (id) => {
+      dropLocal('studySessions', id);
+      return run(supabase.from('study_sessions').delete().eq('id', id));
+    },
+    [run, dropLocal],
+  );
+
+  /**
+   * End a block.
+   *
+   * `keepMinutes` is the honest exit from a timer left running through dinner.
+   * The block ends where it should have — started_at plus the time you actually
+   * spent, plus whatever was paused — rather than banking three hours of an
+   * empty room. Clamped to what really elapsed, so it can only ever record
+   * *less* than the clock, never more.
+   */
+  const stopStudy = useCallback(
+    (id, { keepMinutes = null } = {}) => {
+      const s = rows.studySessions.find((r) => r.id === id);
+      if (!s || s.ended_at) return null;
+
+      const now = new Date();
+
+      // Started and stopped again within the minute: a misclick, not a session.
+      // Dropped rather than stored, because a row reading "0 min" is noise in
+      // the one panel that has to be readable at a glance.
+      if (focusMinutes(s, now) < MIN_LOGGED_MINUTES) return deleteStudySession(id);
+
+      const patch = closedRow(s, now);
+
+      if (keepMinutes != null) {
+        const keep = Math.max(0, Math.min(keepMinutes, focusMinutes(s, now)));
+        patch.ended_at = new Date(
+          new Date(s.started_at).getTime() + keep * 60000 + patch.paused_ms,
+        ).toISOString();
+      }
+
+      patchLocal('studySessions', id, patch);
+      return run(supabase.from('study_sessions').update(patch).eq('id', id));
+    },
+    [rows.studySessions, run, patchLocal, deleteStudySession],
+  );
+
   const value = {
     loading,
     loaded,
@@ -875,6 +1020,8 @@ export function SemesterProvider({ children }) {
     programIdsByPriorTerm,
     breaks,
     breakOn,
+    studySessions,
+    runningSession,
     // The raw tables, for the one caller that wants exactly what is stored
     // rather than anything derived: the backup. Deliberately last and
     // deliberately named — everything else in here is shaped for a screen.
@@ -905,6 +1052,11 @@ export function SemesterProvider({ children }) {
     createBreak,
     updateBreak,
     deleteBreak,
+    startStudy,
+    pauseStudy,
+    resumeStudy,
+    stopStudy,
+    deleteStudySession,
     refresh: fetchAll,
   };
 

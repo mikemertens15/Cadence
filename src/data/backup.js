@@ -34,8 +34,9 @@ export function toBackupJson(rows) {
       version: BUILD.version,
       exported_at: new Date().toISOString(),
       // Named so a future importer can tell a 0.3 backup (no programs, no
-      // grading basis) from a 1.0 one without guessing from the shape.
-      schema: 3,
+      // grading basis) from a 1.0 one without guessing from the shape. 4 adds
+      // study_sessions and the weekly target on a course.
+      schema: 4,
       tables: rows,
     },
     null,

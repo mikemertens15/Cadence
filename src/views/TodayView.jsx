@@ -29,19 +29,28 @@ import {
 } from '../components/ui';
 import { ClassRow, EventRow, BreakCard, RoomChip, classState } from '../components/ClassRow';
 import { PrimaryButton } from '../components/Modal';
+import { StudyCard } from '../components/StudyCard';
+import { StudyWeek } from '../components/StudyWeek';
 
-// The landing screen answers three questions in the order they get asked:
-// where do I need to be, what's coming at me, and how am I doing. Anything that
-// isn't one of those belongs on another tab.
+// The landing screen answers four questions in the order they get asked: where
+// do I need to be, what should I be doing with the next hour, what's coming at
+// me, and how am I doing. Anything that isn't one of those belongs on another
+// tab.
 //
 // "Where do I need to be" gets the most room, because it's the one that's asked
 // while walking. It's answered twice on purpose: once as a single glanceable
 // card for the class happening now or next, and once as the full day, because a
 // five-class Monday is a thing you want to see the shape of.
+//
+// The second question earned its place here in 1.1 rather than getting a tab of
+// its own. It is asked at exactly the moment this screen is already open — you
+// have twenty minutes, you are deciding what to open — and a study timer parked
+// behind a tab is one you start after you have already sat down with the wrong
+// class, which is the entire problem it exists to fix.
 
 const DUE_SOON_DAYS = 5;
 
-export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssignment }) {
+export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssignment, onStartStudy }) {
   const { courses, assignments, courseById } = useSemester();
   const termGrades = useTermGrades();
   const phone = useIsPhone();
@@ -146,6 +155,11 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
       {nextExam && nextExam.a.id !== current?.event?.id && nextExam.a.id !== next?.event?.id && (
         <NextExam row={nextExam} course={courseById.get(nextExam.a.course_id)} onOpen={onOpenAssignment} />
       )}
+
+      {/* Directly under where you have to be, because the two are the same
+          decision: the gap between classes is the block, and the timetable is
+          what decides how long it can be. */}
+      <StudyCard onChoose={onStartStudy} onOpenAssignment={onOpenAssignment} />
 
       <div
         style={{
@@ -283,6 +297,12 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
           </section>
         </div>
 
+        <div style={{ display: 'grid', gap: 24, minWidth: 0 }}>
+        {/* Hours first, grades second, which is the order they can be acted on:
+            one of them is a decision about tonight and the other is a
+            consequence of six weeks of them. */}
+        <StudyWeek />
+
         <section style={{ minWidth: 0 }}>
           <SectionHeading
             action={
@@ -331,6 +351,7 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
             ))}
           </div>
         </section>
+        </div>
       </div>
     </>
   );

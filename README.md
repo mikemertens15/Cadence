@@ -9,6 +9,11 @@ and *what do I need to still get an A*. Plus the two questions a semester at a
 time can't answer on its own: what your GPA actually is, and how far through the
 degree you've got.
 
+And, since 1.1, the question you ask five times a week with the app already open:
+*which of these five classes should get the next hour* — answered from the work,
+the deadlines and the grades it is already keeping, rather than from a stopwatch
+that knows none of them.
+
 Desktop is for setup and bulk entry; the phone is for the ten-second "log this
 score between classes" moment.
 
@@ -35,13 +40,15 @@ VITE_SUPABASE_ANON_KEY=sb_publishable_…
 npm run dev
 ```
 
-Other scripts: `npm test` (grade math), `npm run lint`, `npm run build`.
+Other scripts: `npm test` (grade math and the study plan), `npm run lint`,
+`npm run build`.
 
 The schema lives in [`supabase/migrations/`](supabase/migrations/) — `0001_init.sql`
 for the core tables, `0002_exams_history_breaks.sql` for exams, past semesters,
-the degree goal and days off, and `0003_programs_practice_work_and_basis.sql`
+the degree goal and days off, `0003_programs_practice_work_and_basis.sql`
 for work that isn't graded, how a course is scored, and the several things a
-person is actually working toward.
+person is actually working toward, and `0004_study_sessions.sql` for the hours
+you put in and how many of them each class was meant to get.
 Every table is behind RLS with one policy shape — `user_id = auth.uid()` — so
 the publishable key in the browser bundle can't reach anyone else's rows.
 
@@ -196,6 +203,80 @@ needed letter goes straight back into `neededOnRemaining()` as a target — whic
 is how "Heat Transfer needs a B" becomes "88% on the four assignments left",
 with both halves computed by the code already keeping the live grade honest.
 
+## Which class needs the next hour
+
+A study timer on its own is a stopwatch with a label. It can tell you that you
+spent three hours on something; the one thing it cannot tell you is that those
+were the wrong three hours — which is the actual failure, and the reason this
+belongs here rather than in a stopwatch app. Cadence already knows what's due,
+what it's worth, where every grade stands and what each course has left to score
+on, so the question it can answer is *which class*.
+
+[`src/study.js`](src/study.js) answers it the same way the grading engine works:
+pure functions over plain rows, tested against hand-computed values, so the card
+that recommends a course and the panel that draws the week cannot disagree.
+Three signals, each a 0–1 pressure, combined with weights written down in the
+file where they can be argued with:
+
+- **Time debt** — how much of this week's target is still owed. The literal
+  complaint: three hours here is only a problem because two other classes got
+  none.
+- **Deadline pressure** — what's due inside a week, weighted by how soon *and*
+  by how much of what's left in that course it represents. A 190-point exam on
+  Thursday outranks a 10-point quiz on Thursday, and both outrank the same exam
+  a month out.
+- **Grade risk** — how close the course is to the bottom of its letter band,
+  measured as a position in the band rather than as raw points clear, because
+  two points of headroom means something different on a +/- scale than on a
+  straight one. Zero when nothing is left to score on: an hour cannot move a
+  grade that is already final, so it isn't a reason to pick that class.
+
+What comes out is a ranking and the reasons behind it, never a bare score. The
+number sorts; it isn't a measurement, and showing it would invite being read as
+one. The reasons are the part a person can check and overrule, which is the
+difference between advice and an oracle — the same reason the category
+suggestion says which of its three sources it used.
+
+Deadlines lead the weighting because they're the signal with a hard edge, and
+debt is close behind because it's the complaint being fixed. A class you've
+given nothing to all week can still outrank one with an exam tomorrow that
+already had its six hours — that is not a bug, it's the whole point.
+
+## Deep study, and why the timer is a row
+
+A running block is a row in `study_sessions` with `ended_at` still null, not a
+countdown in a browser tab. Nothing about the number is held in memory: elapsed
+time is `started_at` subtracted from now, so a sleeping laptop, a locked phone,
+a killed tab and a crash all cost nothing, and a block started on the laptop is
+visibly still running on the phone. Pausing is stored the same way, as facts
+rather than as a mode — `paused_at` while it's open, `paused_ms` once it closes.
+
+At most one block runs at a time, and that is a partial unique index rather than
+a rule the client keeps. Two devices each deciding for themselves whether
+anything is running is exactly how an afternoon gets counted twice.
+
+The one thing that would make this whole feature worthless is a number that
+flatters you. Six hours of "deep study" that were really three is worse than no
+number at all, because you'd act on it — the same class of mistake as scoring a
+withdrawal as the 41% you were carrying when you dropped. So a pause genuinely
+stops the clock, half an hour past its planned length the block stops taking its
+own clock at face value and asks which of the two numbers really happened, and a
+block stopped within a minute of starting is treated as the misclick it is.
+
+Block lengths come from the timetable, because the app has it. Starting a 90 at
+1:20 with a class at 2:00 ends either in an abandoned block or a missed lecture,
+so it offers the 35 that fits and says why it's a 35. Eight minutes before a
+lecture it says there isn't time — and still lets you start one, since skipping
+the lecture is a decision you're allowed to make and an app that greys out the
+button is only wrong more confidently.
+
+The weekly target defaults to two hours per credit hour — the low end of the two
+to three every syllabus prints, deliberately, because a target you clear is one
+you keep looking at and one that says you're four hours down every Sunday gets
+ignored inside a fortnight. `courses.weekly_study_minutes` is null for almost
+everyone; it exists so you can disagree after a week of watching the real
+numbers.
+
 ## Getting your data back out
 
 A year of scores living behind someone else's login with no way to take a copy
@@ -236,14 +317,16 @@ OS killed while the phone was in a pocket comes back empty and confident.
 ```
 src/
   grading/       engine.js (the math), scale.js (letters + grade points)
-  data/          SemesterProvider.jsx (all ten tables), grades.js (engine ↔ app),
-                 schedule.js (what's on a given date), backup.js (getting it out)
+  data/          SemesterProvider.jsx (all eleven tables), grades.js (engine ↔ app),
+                 schedule.js (what's on a given date), study.js (hours ↔ app),
+                 backup.js (getting it out)
   auth/          Supabase session, sign-in, password reset
   views/         TodayView, ScheduleView, WorkView, GradesView, CoursesView
   components/    modals, nav, shared UI
   assignments.js what kind of thing a piece of work is, and where it's filed
   courses.js     how a course is scored, and whether you're still in it
   programs.js    what you're working toward, of which there is rarely one
+  study.js       where the hours went, and which class needs the next one
   theme.js       tokens → CSS custom properties in index.css
 ```
 
@@ -265,6 +348,9 @@ Two deliberate departures from Tend worth knowing about:
   than this app needs to make.
 - Recurring breaks, and importing an academic calendar. Four dates typed once a
   semester is not the problem worth solving next.
+- Study history past the current week. Every block is stored, so the rows are
+  there — what's missing is the screen, and "how did October go" is a question
+  worth answering only once there's an October to answer it about.
 
 Drop-lowest was specified as Phase 3 but is implemented — it's part of what
 makes the grade correct, so it belongs in the engine rather than bolted on. The

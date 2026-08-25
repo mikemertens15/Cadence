@@ -8,6 +8,33 @@
 
 export const RELEASES = [
   {
+    version: '1.1.0',
+    date: '2026-08-24',
+    name: 'Which class needs the next hour',
+    notes: [
+      [
+        'added',
+        'Deep study, which is a timer that knows what it’s a timer for. Pick a length, or take the one it suggests, and the block is logged against the class you spent it on. The clock lives in the database rather than in the tab, so a laptop that goes to sleep, a phone that locks, or a browser you close by accident costs you nothing — and a block you start on the laptop is still running when you pull out your phone in the library. Pausing is real: the count stops, and the time you were away never enters the total.',
+      ],
+      [
+        'added',
+        'It says which class, and why. Three hours on one course is only a problem because two others got none, and that is a thing Cadence can already see — it knows what’s due, what it’s worth, where every grade stands and what each course still has left to score on. So the card names one class and shows its reasons: exam Thursday, six hours short this week, right on the B cutoff. The reasons are the point. A ranking you can’t see the working of is one you can’t overrule when it’s wrong, and "Another class" opens the whole order with everyone’s reasons attached.',
+      ],
+      [
+        'added',
+        'Where the week actually went. Five bars, each against what that class was meant to get — two hours a week per credit hour until you say otherwise, which you can, in hours, on the same panel. It also says the sentence the bars are for when it’s true: 71% of your week went to one class.',
+      ],
+      [
+        'added',
+        'Blocks that fit the day you’re actually having. Starting a 90 at 1:20 with a class at 2:00 ends one of two ways and both are bad, so the app offers the 35 that fits and says why it’s a 35. Eight minutes before a lecture it says there isn’t time — and still lets you start one, because skipping the lecture is your call to make and not the app’s.',
+      ],
+      [
+        'fixed',
+        'A timer left running through dinner would have been the most misleading number this app is capable of showing, in the same way scoring a withdrawal as the 41% you were carrying would be. Half an hour past the length you set, the block stops taking its own clock at face value and asks which of the two numbers actually happened. A block stopped within a minute of starting is treated as the misclick it is and not logged at all.',
+      ],
+    ],
+  },
+  {
     version: '1.0.0',
     date: '2026-08-24',
     name: 'A semester you can actually run',
