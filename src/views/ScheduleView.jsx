@@ -9,6 +9,7 @@ import { useNow } from '../useNow';
 import { Card, SectionHeading, EmptyState } from '../components/ui';
 import { ClassRow, EventRow, BreakCard, classState } from '../components/ClassRow';
 import { PrimaryButton } from '../components/Modal';
+import { SemesterProgress } from '../components/SemesterProgress';
 
 // The week, two ways. A laptop gets the grid you'd draw on paper — seven
 // columns, time running down — because the useful question there is "what does
@@ -36,29 +37,32 @@ export function ScheduleView({ onAddCourse, onOpenAssignment }) {
     };
   }, [now, blocksOn]);
 
-  if (!courses.length) {
-    return (
-      <EmptyState
-        title="No courses yet"
-        body="Add your first course — its meeting times fill in this schedule automatically."
-        action={<PrimaryButton onClick={onAddCourse}>Add a course</PrimaryButton>}
-      />
-    );
-  }
-
-  if (!hasAnything) {
-    return (
-      <EmptyState
-        title="Nothing meets yet"
-        body="Your courses don't have meeting times set. Open one from Courses and add when it meets."
-      />
-    );
-  }
-
-  return phone ? (
+  // The week is what this screen is for; the term above it is the context that
+  // makes the week mean anything. It sits above the empty states too — a
+  // semester that started nine days ago is worth knowing about precisely when
+  // there is nothing else on the screen to say so.
+  const body = !courses.length ? (
+    <EmptyState
+      title="No courses yet"
+      body="Add your first course — its meeting times fill in this schedule automatically."
+      action={<PrimaryButton onClick={onAddCourse}>Add a course</PrimaryButton>}
+    />
+  ) : !hasAnything ? (
+    <EmptyState
+      title="Nothing meets yet"
+      body="Your courses don't have meeting times set. Open one from Courses and add when it meets."
+    />
+  ) : phone ? (
     <DayAgenda week={week} now={now} onOpenAssignment={onOpenAssignment} />
   ) : (
     <WeekGrid week={week} now={now} onOpenAssignment={onOpenAssignment} />
+  );
+
+  return (
+    <>
+      <SemesterProgress />
+      {body}
+    </>
   );
 }
 

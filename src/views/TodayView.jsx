@@ -31,6 +31,7 @@ import { ClassRow, EventRow, BreakCard, RoomChip, classState } from '../componen
 import { PrimaryButton } from '../components/Modal';
 import { StudyCard } from '../components/StudyCard';
 import { StudyWeek } from '../components/StudyWeek';
+import { SemesterStrip } from '../components/SemesterProgress';
 
 // The landing screen answers four questions in the order they get asked: where
 // do I need to be, what should I be doing with the next hour, what's coming at
@@ -138,7 +139,7 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
   if (!courses.length) {
     return (
       <>
-        <Greeting now={now} phone={phone} />
+        <Greeting now={now} phone={phone} navigate={navigate} />
         <EmptyState
           title="Let's get your semester in"
           body="Add your courses — name, when they meet, and how they're graded — and this page fills itself in from there."
@@ -150,7 +151,7 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
 
   return (
     <>
-      <Greeting now={now} phone={phone} />
+      <Greeting now={now} phone={phone} navigate={navigate} />
 
       <NextUp
         block={heroBlock}
@@ -373,7 +374,12 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
   );
 }
 
-function Greeting({ now, phone }) {
+// The date, and under it where that date falls in the semester. The strip is
+// here rather than anywhere else on the page because this is the block nobody
+// reads on purpose — you look at it while the rest loads — and "further through
+// than you thought" is exactly the kind of thing that has to arrive uninvited
+// or not at all. It opens the schedule, where the full picture lives.
+function Greeting({ now, phone, navigate }) {
   return (
     <div style={{ marginBottom: phone ? 14 : 20 }}>
       <div style={{ font: `400 ${phone ? 24 : 27}px ${fonts.serif}`, color: colors.ink }}>
@@ -382,6 +388,7 @@ function Greeting({ now, phone }) {
       <div style={{ font: `500 13px ${fonts.sans}`, color: colors.muted2, marginTop: 4 }}>
         {longDate(now)}
       </div>
+      <SemesterStrip onClick={navigate ? () => navigate('schedule') : undefined} />
     </div>
   );
 }

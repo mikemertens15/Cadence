@@ -76,6 +76,7 @@ export function daysUntil(d, now = new Date()) {
 }
 
 export const monthDay = (d) => `${MONTHS_SHORT[d.getMonth()]} ${d.getDate()}`;
+export const monthShort = (d) => MONTHS_SHORT[d.getMonth()];
 export const shortDay = (d) => DOWS[dowIndex(d)];
 export const longDate = (d) => `${DOWS_LONG[dowIndex(d)]}, ${MONTHS_LONG[d.getMonth()]} ${d.getDate()}`;
 

@@ -216,6 +216,33 @@ export function SegmentBar({ share, height = 10, fill = colors.accent, soft = co
   );
 }
 
+// One number with its name and a line of context. Used wherever a card ends in
+// a row of figures — a degree's credits, a semester's days left — so the two
+// read as the same kind of statement about the same kind of thing.
+export function Stat({ label, value, note }) {
+  return (
+    <div style={{ minWidth: 88 }}>
+      <div
+        style={{
+          font: `600 10.5px ${fonts.sans}`,
+          color: colors.muted,
+          textTransform: 'uppercase',
+          letterSpacing: '0.06em',
+        }}
+      >
+        {label}
+      </div>
+      <div
+        className="cad-nums"
+        style={{ font: `600 19px ${fonts.sans}`, color: colors.ink, margin: '3px 0 2px' }}
+      >
+        {value}
+      </div>
+      <div style={{ font: `400 11px ${fonts.sans}`, color: colors.faint }}>{note}</div>
+    </div>
+  );
+}
+
 export function EmptyState({ title, body, action }) {
   // An empty state is an absence, and on a phone it shouldn't cost more screen
   // than the content it stands in for — "nothing due" was taking 350px of an

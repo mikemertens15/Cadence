@@ -286,6 +286,33 @@ because they fail in opposite directions: the JSON keeps everything and is
 unreadable; the CSV is readable and throws away structure. Neither is the
 "advanced" one hidden behind a disclosure.
 
+## How far through the semester you are
+
+Two dates already in the database, and a bar drawn between them. The reason it
+earns a place is that the answer is genuinely hard to feel: a semester has no
+landmarks between the first week and finals, so the estimate you carry was made
+in September and has never been corrected. Finding out in week nine rather than
+week thirteen is the difference between a plan and a scramble.
+
+The maths is in [`src/term.js`](src/term.js), and it counts days on the calendar
+rather than off a millisecond span — two weekends a year are twenty-five hours
+long, and "13.96 weeks left" is not a sentence. Weeks are numbered the way a
+syllabus numbers them: week 1 is the calendar week the term starts in, whether
+that week is five days long or one.
+
+Two things it deliberately does *not* count as time you owe. Breaks come out of
+"class days left", and only the weekdays you actually meet count toward it — a
+Tuesday/Thursday course has a very different number left than a five-day one. So
+the card can say twenty-one days left and then say three of them are
+Thanksgiving.
+
+It appears twice, at two sizes, because it gets asked two ways. On Today it's a
+line under the date: week, bar, percentage, no more, because that block is one
+you look at while the rest of the page loads and the point has to arrive
+uninvited. On the schedule — where you went *because* you were thinking about
+time — it's the whole card, with the months it crosses and the breaks drawn
+where they fall.
+
 ## Days off
 
 Meeting rows are weekly and have no opinion about the calendar, so without
@@ -319,7 +346,7 @@ src/
   grading/       engine.js (the math), scale.js (letters + grade points)
   data/          SemesterProvider.jsx (all eleven tables), grades.js (engine ↔ app),
                  schedule.js (what's on a given date), study.js (hours ↔ app),
-                 backup.js (getting it out)
+                 term.js (the semester, measured), backup.js (getting it out)
   auth/          Supabase session, sign-in, password reset
   views/         TodayView, ScheduleView, WorkView, GradesView, CoursesView
   components/    modals, nav, shared UI
@@ -327,6 +354,7 @@ src/
   courses.js     how a course is scored, and whether you're still in it
   programs.js    what you're working toward, of which there is rarely one
   study.js       where the hours went, and which class needs the next one
+  term.js        how far through the semester you are, and what's left of it
   theme.js       tokens → CSS custom properties in index.css
 ```
 

@@ -8,6 +8,21 @@
 
 export const RELEASES = [
   {
+    version: '1.2.0',
+    date: '2026-08-26',
+    name: 'Further through than you thought',
+    notes: [
+      [
+        'added',
+        'A semester has no odometer. It has a first week you remember and a last week that is a long way off, and every week in between looks like the one before it \u2014 so the estimate you\u2019re carrying was made in September and has never once been corrected. Cadence already knows the two dates it takes to correct it. Today now carries a line under the date saying which week of how many this is and how far through you are, and the schedule leads with the whole picture: the bar, the months it crosses, where the breaks fall, and how many days of class are actually left. The one it exists to show you is "past halfway", which arrives a good deal earlier than it feels like it should.',
+      ],
+      [
+        'added',
+        'Days you don\u2019t have to show up are counted as such. Class days left counts the days you actually meet \u2014 a Tuesday/Thursday course has a very different number left than a five-day one \u2014 and the days off already entered come back out of it. The week before Thanksgiving, the card says twenty-one days left and then says three of them are Thanksgiving, which is the kind of thing that is obvious in hindsight and invisible in advance.',
+      ],
+    ],
+  },
+  {
     version: '1.1.0',
     date: '2026-08-24',
     name: 'Which class needs the next hour',

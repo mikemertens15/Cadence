@@ -2,7 +2,7 @@ import { colors, fonts } from '../theme';
 import { usePrograms } from '../data/grades';
 import { describeProgram } from '../programs';
 import { useIsPhone } from '../useMediaQuery';
-import { Card, SectionHeading, SegmentBar, fmtCredits, fmtGpa } from './ui';
+import { Card, SectionHeading, SegmentBar, Stat, fmtCredits, fmtGpa } from './ui';
 import { GhostButton } from './Modal';
 
 // How far through each thing you're doing you are.
@@ -256,30 +256,6 @@ function ProgramCard({ row, phone }) {
         )}
       </div>
     </Card>
-  );
-}
-
-function Stat({ label, value, note }) {
-  return (
-    <div style={{ minWidth: 88 }}>
-      <div
-        style={{
-          font: `600 10.5px ${fonts.sans}`,
-          color: colors.muted,
-          textTransform: 'uppercase',
-          letterSpacing: '0.06em',
-        }}
-      >
-        {label}
-      </div>
-      <div
-        className="cad-nums"
-        style={{ font: `600 19px ${fonts.sans}`, color: colors.ink, margin: '3px 0 2px' }}
-      >
-        {value}
-      </div>
-      <div style={{ font: `400 11px ${fonts.sans}`, color: colors.faint }}>{note}</div>
-    </div>
   );
 }
 
