@@ -8,6 +8,17 @@
 
 export const RELEASES = [
   {
+    version: '1.2.1',
+    date: '2026-08-28',
+    name: 'The link comes back',
+    notes: [
+      [
+        'fixed',
+        'A sign-in link that said it had expired the moment you opened it. It hadn’t. It worked — once, silently — and then handed you to an address that only exists on the laptop Cadence was built on, so the account was made and the page you landed on was nothing at all. The sensible thing to do next is go back to the inbox and click the link again, and that is the one thing that genuinely does spend it: the second click is where the expiry message comes from, and by then the link had already done its job. Links now come back to the site you actually opened them from. If this happened to you while signing up, your account is there — ask for a new link and it will let you straight in.',
+      ],
+    ],
+  },
+  {
     version: '1.2.0',
     date: '2026-08-26',
     name: 'Further through than you thought',
