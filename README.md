@@ -40,6 +40,38 @@ VITE_SUPABASE_ANON_KEY=sb_publishable_…
 npm run dev
 ```
 
+### Where the emailed links come back to
+
+Sign-in and reset emails carry a link back to the app, and the address it
+returns to has to be on the project's allow list under **Authentication → URL
+Configuration**. Supabase does not reject an address that isn't on it — it
+quietly substitutes the **Site URL** instead, so a misconfigured project sends
+out links that verify correctly and then land somewhere nobody is listening.
+The account gets created and the person still sees an error; clicking again
+spends the one-time token and produces "Email link is invalid or has expired",
+which looks like the link was the problem when the list was.
+
+So the Site URL must be the real site, and the allow list needs, at minimum:
+
+```
+https://<production-host>/**
+https://<project>-*-<vercel-scope>.vercel.app/**   preview deployments
+http://localhost:5173/**                           npm run dev
+```
+
+Mind the trailing slash: `/` is a separator in the glob Supabase matches
+against, so `https://example.com/**` does *not* match a bare
+`https://example.com`. The app appends the slash for this reason — see
+`SITE_URL` in [`src/auth/AuthProvider.jsx`](src/auth/AuthProvider.jsx).
+
+A preview deployment's origin can't be predicted well enough to allow-list on
+its own, so set `VITE_SITE_URL` to pin every emailed link to the real site
+regardless of which build sent it:
+
+```
+VITE_SITE_URL=https://<production-host>
+```
+
 Other scripts: `npm test` (grade math and the study plan), `npm run lint`,
 `npm run build`.
 

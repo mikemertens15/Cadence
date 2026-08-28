@@ -21,6 +21,29 @@ const initialParams = new URLSearchParams(initialHash);
 const CAME_FROM_RECOVERY = initialParams.get('type') === 'recovery';
 const INITIAL_LINK_ERROR = initialParams.get('error_description') || '';
 
+// Where an emailed link should come back to. Supabase only honours this if it
+// matches the project's Redirect URLs allow list — an unlisted value is quietly
+// swapped for the project's Site URL rather than rejected, which is how every
+// link we sent from production ended up pointing at http://localhost:3000.
+//
+// Two details decide whether the value is honoured:
+//
+//   The trailing slash. Supabase matches the allow list as a glob in which `/`
+//   is a separator, so the usual `https://example.com/**` entry does not match
+//   a bare `https://example.com` — `window.location.origin` on its own gets
+//   rejected and falls back to the Site URL. Sending the slash matches.
+//
+//   VITE_SITE_URL. A preview deployment's origin is unpredictable, so a link
+//   sent from one has no allow-listed address to return to. Pointing this at
+//   the real site sends those links somewhere that exists.
+const SITE_URL = (() => {
+  const base =
+    import.meta.env.VITE_SITE_URL || (typeof window === 'undefined' ? '' : window.location.origin);
+  // Nothing to offer: let Supabase fall back to the Site URL on its own.
+  if (!base) return undefined;
+  return base.endsWith('/') ? base : `${base}/`;
+})();
+
 // How close to expiry an access token has to be before it's treated as already
 // dead. Thirty seconds: a token with ten left will expire somewhere in the
 // middle of the ten reads the app opens with, which fails half of them.
@@ -94,7 +117,7 @@ export function AuthProvider({ children }) {
   const signInWithMagicLink = useCallback(async (email) => {
     const { error } = await supabase.auth.signInWithOtp({
       email: (email || '').trim(),
-      options: { emailRedirectTo: window.location.origin },
+      options: { emailRedirectTo: SITE_URL },
     });
     if (error) throw error;
   }, []);
@@ -111,7 +134,7 @@ export function AuthProvider({ children }) {
   // which routes to the "choose a new password" screen.
   const sendPasswordReset = useCallback(async (email) => {
     const { error } = await supabase.auth.resetPasswordForEmail((email || '').trim(), {
-      redirectTo: window.location.origin,
+      redirectTo: SITE_URL,
     });
     if (error) throw error;
   }, []);
