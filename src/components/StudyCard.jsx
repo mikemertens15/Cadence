@@ -291,6 +291,8 @@ function Reasons({ entry, now }) {
           );
         case 'no-grades':
           return <span key={i}>nothing graded yet</span>;
+        case 'waiting':
+          return <span key={i}>waiting on grades</span>;
         case 'settled':
           return <span key={i}>nothing left to score</span>;
         case 'untouched':

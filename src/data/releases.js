@@ -8,6 +8,25 @@
 
 export const RELEASES = [
   {
+    version: '1.4.1',
+    date: '2026-08-29',
+    name: 'Handed in, waiting on a grade',
+    notes: [
+      [
+        'fixed',
+        'Homework you had already handed in still sat in Overdue, in red, and the grades page counted it as work you still had to do — "3 left" when two of those three were sitting in a gradebook. Marking something submitted now files it under Waiting on a grade, the same place an exam you already sat goes, and the course page says so instead of calling it late.',
+      ],
+      [
+        'fixed',
+        'The grades page is where you go to type a score in, and the box next to handed-in work was a what-if — it looked like it saved and did not. That box is now the real score, ready for the moment the paper comes back, and you can mark work submitted from the same row so you never have to bounce to the work list first. Future work still has the dashed what-if, so typing 80 on an exam you have not sat cannot invent a grade.',
+      ],
+      [
+        'changed',
+        '"What do I need" no longer asks you to score 88% on a paper you already turned in. It aims at the work you can still do, and if everything is in, it tells you what those scores have to come back as. Due soon and the study card stop nagging about work that is already off your desk.',
+      ],
+    ],
+  },
+  {
     version: '1.4.0',
     date: '2026-08-29',
     name: 'Only the parts you want',

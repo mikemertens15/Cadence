@@ -9,6 +9,7 @@ import {
   courseStanding,
   summarizeCredits,
   termGpaPlan,
+  isAwaitingScore,
 } from '../src/grading/engine.js';
 import { letterFor, gradePoints, DEFAULT_SCALE, PLUS_MINUS_SCALE, scaleFor } from '../src/grading/scale.js';
 
@@ -499,6 +500,55 @@ test('ungraded work is not counted as work still ahead of you', () => {
   close(g.pct, 90);
 });
 
+test('submitted work is waiting on a grade, not still ahead of you', () => {
+  // 90/100 on the homework that's back; the paper is in and has no score yet.
+  // It must not count as "1 left" — you cannot do anything about it — and it
+  // must not dilute the 90 either.
+  const g = gradeCourse({
+    categories: [cat('h', 'Homework', 100)],
+    assignments: [
+      item('a1', 'h', 100, 90),
+      item('p1', 'h', 100, null, { status: 'submitted' }),
+    ],
+  });
+  close(g.pct, 90);
+  assert.equal(g.remainingCount, 0);
+  assert.equal(g.pendingCount, 1);
+  assert.equal(g.pendingPossible, 100);
+  assert.equal(g.categories[0].pendingCount, 1);
+});
+
+test('a test already sat is waiting on a grade even without the submitted flag', () => {
+  const now = new Date('2026-10-08T12:00:00');
+  const g = gradeCourse({
+    categories: [cat('e', 'Exams', 100)],
+    assignments: [
+      item('mid', 'e', 150, null, { kind: 'test', due_at: '2026-10-06T14:00:00' }),
+      item('fin', 'e', 200, null, { kind: 'final', due_at: '2026-12-10T09:00:00' }),
+    ],
+    now,
+  });
+  assert.equal(g.pendingCount, 1);
+  assert.equal(g.remainingCount, 1);
+  assert.equal(g.remainingPossible, 200);
+  assert.equal(g.pendingPossible, 150);
+});
+
+test('isAwaitingScore is submitted or a past exam, and never a scored row', () => {
+  assert.equal(isAwaitingScore(item('a', 'h', 100, null, { status: 'submitted' })), true);
+  assert.equal(isAwaitingScore(item('a', 'h', 100, 90, { status: 'submitted' })), false);
+  assert.equal(isAwaitingScore(item('a', 'h', 100)), false);
+  const now = new Date('2026-10-08T12:00:00');
+  assert.equal(
+    isAwaitingScore(item('q', 'e', 20, null, { kind: 'quiz', due_at: '2026-10-07T09:00:00' }), {}, now),
+    true,
+  );
+  assert.equal(
+    isAwaitingScore(item('q', 'e', 20, null, { kind: 'quiz', due_at: '2026-10-09T09:00:00' }), {}, now),
+    false,
+  );
+});
+
 test('the solver does not project scores onto work nobody will grade', () => {
   // One graded 80/100 and one practice set. Acing "everything left" must be 80,
   // because there is nothing left — the practice set cannot lift the grade.
@@ -518,6 +568,55 @@ test('the solver does not project scores onto work nobody will grade', () => {
 });
 
 // -------------------------------------------- what a course actually earns
+
+test('the solver aims at work you can still do, not scores already sitting in a gradebook', () => {
+  // HW 50% at 100%, plus a submitted extra 100-pointer in HW that hasn't come
+  // back. Exams 50%: one 100-point final still ahead.
+  //
+  // Live grade is 100% (the extra doesn't count yet, exams have nothing graded).
+  // Filling only the final: 0.5(100) + 0.5(100x) = 50 + 50x. Target 90 → x = 0.8.
+  // Filling the extra as well would have asked for a different number on a
+  // paper you cannot rewrite — which is the lie this split exists to stop.
+  const r = neededOnRemaining(
+    {
+      categories: [cat('h', 'Homework', 50), cat('e', 'Exams', 50)],
+      assignments: [
+        item('hw', 'h', 100, 100),
+        item('extra', 'h', 100, null, { status: 'submitted' }),
+        item('final', 'e', 100),
+      ],
+    },
+    90,
+  );
+  assert.equal(r.status, 'reachable');
+  assert.equal(r.needed, 80);
+  assert.equal(r.remainingCount, 1);
+  assert.equal(r.pendingCount, 1);
+  close(r.floor, 50);
+  close(r.ceiling, 100);
+});
+
+test('once everything is in, the solver asks what those scores need to come back as', () => {
+  // HW 50% at 100%. Exams 50% is a 100-pointer already handed in.
+  // Nothing left to do; the useful question is what the exam has to come back as.
+  // 0.5(100) + 0.5(100x) = 90 → x = 0.8.
+  const r = neededOnRemaining(
+    {
+      categories: [cat('h', 'Homework', 50), cat('e', 'Exams', 50)],
+      assignments: [
+        item('hw', 'h', 100, 100),
+        item('exam', 'e', 100, null, { status: 'submitted' }),
+      ],
+    },
+    90,
+  );
+  assert.equal(r.status, 'reachable');
+  assert.equal(r.needed, 80);
+  assert.equal(r.remainingCount, 0);
+  assert.equal(r.pendingCount, 1);
+  close(r.floor, 50);
+  close(r.ceiling, 100);
+});
 
 test('a pass/fail course earns credit and no grade points', () => {
   const s = courseStanding({ grading_basis: 'pass_fail' });

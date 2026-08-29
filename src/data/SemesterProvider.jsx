@@ -787,23 +787,27 @@ export function SemesterProvider({ children }) {
   /**
    * Record (or clear) a score.
    *
-   * Status follows the score rather than being tracked separately: entering one
-   * means it came back graded, and clearing one puts the assignment back in the
-   * pile of work still ahead of you. Keeping the two in sync by hand is exactly
-   * the sort of bookkeeping this app exists to remove.
+   * Entering one means it came back graded. Clearing one does *not* put the
+   * assignment back in the pile of work still ahead of you — the work was
+   * already handed in, you're just waiting on a number again — so it returns
+   * to submitted rather than todo. A row that was never submitted (a score
+   * typed on the work list before ticking the box) goes back to whatever it
+   * was, which is almost always todo.
    */
   const setScore = useCallback(
     (id, { pointsEarned = null, scorePct = null } = {}) => {
       const scored = pointsEarned != null || scorePct != null;
+      const current = rows.assignments.find((a) => a.id === id);
+      const wasIn = current?.status === 'graded' || current?.status === 'submitted';
       const patch = {
         points_earned: pointsEarned,
         score_pct: scorePct,
-        status: scored ? 'graded' : 'todo',
+        status: scored ? 'graded' : wasIn ? 'submitted' : (current?.status ?? 'todo'),
       };
       patchLocal('assignments', id, patch);
       return run(supabase.from('assignments').update(patch).eq('id', id));
     },
-    [run, patchLocal],
+    [run, patchLocal, rows.assignments],
   );
 
   // ------------------------------------------------------ history & degree

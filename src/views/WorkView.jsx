@@ -18,10 +18,10 @@ import { ScoreInput, PresentSwitch } from '../components/AssignmentModal';
 
 const BUCKETS = [
   ['overdue', 'Overdue', tone.red],
-  // Exams you've already sat. They are neither overdue nor done, and the only
-  // action available is to type in a score the moment it lands — which is
-  // exactly why they deserve a section instead of being scattered through
-  // "Overdue" in red, implying you failed to hand in a test you took.
+  // Exams you've already sat, and homework you've handed in. Neither is
+  // overdue nor done, and the only action left is to type in a score the
+  // moment it lands — which is why they deserve a section instead of sitting
+  // in Overdue in red, implying you failed to turn in work you already did.
   ['past', 'Waiting on a grade', null],
   ['today', 'Today', null],
   ['soon', 'This week', null],
@@ -66,7 +66,13 @@ export function WorkView({ onOpen, onAdd }) {
     const open = filtered.filter((a) => !isGraded(a));
 
     const rows = (showGraded ? filtered : open)
-      .map((a) => ({ a, due: describeDue(a.due_at, now, { event: isEvent(a.kind) }) }))
+      .map((a) => ({
+        a,
+        due: describeDue(a.due_at, now, {
+          event: isEvent(a.kind),
+          submitted: a.status === 'submitted',
+        }),
+      }))
       // Undated work sorts last; everything else by when it's actually due.
       .sort((x, y) => {
         if (!x.due.date) return y.due.date ? 1 : 0;
@@ -77,8 +83,15 @@ export function WorkView({ onOpen, onAdd }) {
     const map = new Map(BUCKETS.map(([key]) => [key, []]));
     for (const row of rows) {
       // A graded assignment has left the queue — it belongs in its own section,
-      // not sitting in "Overdue" because it was turned in late.
-      const key = showGraded && isGraded(row.a) ? 'graded' : row.due.type;
+      // not sitting in "Overdue" because it was turned in late. Handed in and
+      // waiting on a number is the same shape as an exam you've already sat:
+      // the work is done, the score isn't, and Overdue in red would be a lie.
+      const key =
+        showGraded && isGraded(row.a)
+          ? 'graded'
+          : !isGraded(row.a) && row.a.status === 'submitted'
+            ? 'past'
+            : row.due.type;
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(row);
     }
@@ -182,11 +195,12 @@ export function WorkView({ onOpen, onAdd }) {
                     phone={phone}
                     onOpen={() => onOpen(a)}
                     onScore={(v) => setScore(a.id, { pointsEarned: v })}
-                    onToggleStatus={() =>
+                    onToggleStatus={() => {
+                      if (isGraded(a)) return;
                       updateAssignment(a.id, {
                         status: a.status === 'submitted' ? 'todo' : 'submitted',
-                      })
-                    }
+                      });
+                    }}
                   />
                 ))}
               </div>
@@ -209,7 +223,7 @@ function AssignmentRow({
   onToggleStatus,
 }) {
   const graded = isGraded(a);
-  const submitted = a.status === 'submitted';
+  const submitted = a.status === 'submitted' && !graded;
   const event = isEvent(a.kind);
   const c = courseColor(course?.color);
 
@@ -240,6 +254,31 @@ function AssignmentRow({
               graded || due.type === 'past' ? 'none' : `2px dashed ${colors.inputBorder}`,
           }}
         />
+      ) : graded ? (
+        <span
+          aria-hidden="true"
+          style={{
+            width: 19,
+            height: 19,
+            borderRadius: 7,
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: colors.accent,
+          }}
+        >
+          <span
+            style={{
+              width: 8,
+              height: 4.5,
+              borderLeft: `2px solid ${colors.onAccent}`,
+              borderBottom: `2px solid ${colors.onAccent}`,
+              transform: 'rotate(-45deg)',
+              marginTop: -2,
+            }}
+          />
+        </span>
       ) : (
       <button
         onClick={onToggleStatus}
@@ -253,11 +292,11 @@ function AssignmentRow({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          background: graded || submitted ? colors.accent : 'transparent',
-          border: graded || submitted ? 'none' : `2px solid ${colors.inputBorder}`,
+          background: submitted ? colors.accent : 'transparent',
+          border: submitted ? 'none' : `2px solid ${colors.inputBorder}`,
         }}
       >
-        {(graded || submitted) && (
+        {submitted && (
           <span
             style={{
               width: 8,
@@ -329,7 +368,7 @@ function AssignmentRow({
         </div>
       ) : null}
 
-      <DuePill due={due} done={graded} />
+      <DuePill due={due} done={graded} submitted={submitted} />
     </Card>
   );
 }

@@ -38,6 +38,12 @@ test('an exam already sat is past, not late', () => {
   assert.equal(due.label, '2d ago');
 });
 
+test('homework handed in is past, not late', () => {
+  const due = describeDue(at(2026, 10, 6, 14), NOW, { submitted: true });
+  assert.equal(due.type, 'past');
+  assert.equal(due.label, '2d ago');
+});
+
 test('the two agree about everything still ahead', () => {
   const when = at(2026, 10, 9, 14);
   const work = describeDue(when, NOW);

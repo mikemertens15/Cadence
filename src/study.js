@@ -1,5 +1,5 @@
 import { getWeek } from './dates.js';
-import { isGraded, courseStanding } from './grading/engine.js';
+import { isGraded, isAwaitingScore, courseStanding } from './grading/engine.js';
 import { isEvent } from './assignments.js';
 
 // Where the hours went, and which class should get the next one.
@@ -218,14 +218,16 @@ export function bandFor(pct, scale = []) {
  * out too; it may still be worth doing, but it cannot be the reason one class
  * outranks another for the grade's sake. An exam already sat is out for the
  * plainest reason of all: there is no studying for a test you have taken.
- * Overdue homework stays, at full urgency, because it is still owed.
+ * Homework already handed in is the same: the hours cannot change a score that
+ * is sitting in a gradebook. Overdue homework you have *not* turned in stays,
+ * at full urgency, because it is still owed.
  */
 export function pressingWork(assignments = [], now = new Date(), horizonDays = HORIZON_DAYS) {
   const day = 86400000;
   const out = [];
 
   for (const a of assignments) {
-    if (!a.due_at || a.counts_toward_grade === false || isGraded(a)) continue;
+    if (!a.due_at || a.counts_toward_grade === false || isGraded(a) || isAwaitingScore(a, {}, now)) continue;
     const at = ms(a.due_at);
     if (at == null) continue;
 
@@ -299,7 +301,10 @@ export function studyPlan({ entries = [], sessions = [], now = new Date(), horiz
       );
 
       const band = bandFor(grade.pct ?? null, scale);
+      // Only work you can still do counts. Scores sitting in a gradebook will
+      // move the number when they land, but an hour tonight cannot change them.
       const canStillMove = (grade.remainingCount ?? 0) > 0;
+      const waitingOnGrades = !canStillMove && (grade.pendingCount ?? 0) > 0;
       const gradePressure = band && canStillMove ? 1 - band.position : 0;
 
       const score =
@@ -314,7 +319,14 @@ export function studyPlan({ entries = [], sessions = [], now = new Date(), horiz
         band,
         work,
         pressure: { deadline, debt, grade: gradePressure },
-        reasons: reasonsFor({ row, work, band, canStillMove, hasGrades: !!grade.hasGrades }),
+        reasons: reasonsFor({
+          row,
+          work,
+          band,
+          canStillMove,
+          waitingOnGrades,
+          hasGrades: !!grade.hasGrades,
+        }),
       };
     });
 
@@ -340,7 +352,7 @@ const AT_RISK_POSITION = 0.35;
  * else in the app, and a second vocabulary for the same facts would be a second
  * place for them to disagree.
  */
-function reasonsFor({ row, work, band, canStillMove, hasGrades }) {
+function reasonsFor({ row, work, band, canStillMove, waitingOnGrades, hasGrades }) {
   const out = [];
 
   if (work.length) out.push({ kind: 'deadline', assignment: work[0].assignment, more: work.length - 1 });
@@ -352,6 +364,8 @@ function reasonsFor({ row, work, band, canStillMove, hasGrades }) {
     out.push({ kind: 'grade', letter: band.letter, slack: band.slack });
   } else if (!hasGrades) {
     out.push({ kind: 'no-grades' });
+  } else if (waitingOnGrades) {
+    out.push({ kind: 'waiting' });
   } else if (!canStillMove) {
     out.push({ kind: 'settled' });
   }

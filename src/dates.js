@@ -210,7 +210,11 @@ export const labelForTime = (time) => {
 // in is overdue and wants a red pill. A test you sat on Tuesday is not overdue
 // — it's done, and what you're waiting on is the score. Calling that "3d late"
 // would be both wrong and, on the morning of a bad week, quietly demoralising.
-export function describeDue(dueAt, now = new Date(), { event = false } = {}) {
+//
+// `submitted` is the same flip for homework: handed in and waiting on a grade
+// is not late, even if the due date has passed. The work list files it with
+// sat exams under "Waiting on a grade" rather than in Overdue in red.
+export function describeDue(dueAt, now = new Date(), { event = false, submitted = false } = {}) {
   if (!dueAt) {
     return { date: null, daysLeft: null, type: 'none', label: event ? 'No date set' : 'No due date' };
   }
@@ -226,7 +230,7 @@ export function describeDue(dueAt, now = new Date(), { event = false } = {}) {
   // Past the actual moment, not just the calendar day: something due at 5pm is
   // late at 5:01pm, and calling it "Today" until midnight would be a lie.
   if (date < now) {
-    if (event) {
+    if (event || submitted) {
       const label =
         daysLeft === 0 ? 'Earlier today' : daysLeft === -1 ? 'Yesterday' : `${-daysLeft}d ago`;
       return { date, daysLeft, type: 'past', label };

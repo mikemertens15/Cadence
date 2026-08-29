@@ -95,7 +95,7 @@ export function CourseChip({ course, onClick }) {
 
 // Due-date pill. The text comes from dates.describeDue, so a pill can never
 // disagree with the group it's sorted into; only the emphasis is decided here.
-export function DuePill({ due, done }) {
+export function DuePill({ due, done, submitted }) {
   const style = (bg, color) => ({
     font: `600 11px ${fonts.sans}`,
     background: bg,
@@ -107,6 +107,15 @@ export function DuePill({ due, done }) {
   });
 
   if (done) return <span style={style('transparent', tone.green)}>Graded</span>;
+  // Handed in, no score back. Blue rather than red: the ball is in the
+  // professor's court, and "3d late" would say you still owed it.
+  if (submitted) {
+    return (
+      <span style={style(colors.chipBg, tone.blue)}>
+        {due.type === 'past' ? `Submitted · ${due.label}` : 'Submitted'}
+      </span>
+    );
+  }
   if (due.type === 'overdue') return <span style={style(tone.red, '#fff')}>{due.label}</span>;
   // An exam you've already taken. Not late, not done — the ball is in the
   // professor's court, and a red pill would say the opposite. "Taken" rather

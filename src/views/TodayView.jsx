@@ -16,7 +16,7 @@ import { useSchedule } from '../data/schedule';
 import { useTermGrades } from '../data/grades';
 import { useIsPhone } from '../useMediaQuery';
 import { useNow } from '../useNow';
-import { isGraded } from '../grading/engine';
+import { isGraded, isAwaitingScore } from '../grading/engine';
 import {
   Card,
   SectionHeading,
@@ -132,12 +132,13 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
   const dueSoon = useMemo(
     () =>
       assignments
-        .filter((a) => !isGraded(a) && a.due_at)
+        .filter((a) => !isGraded(a) && !isAwaitingScore(a, {}, now) && a.due_at)
         .map((a) => ({ a, due: describeDue(a.due_at, now, { event: isEvent(a.kind) }) }))
         .filter((r) => r.due.daysLeft != null && r.due.daysLeft <= DUE_SOON_DAYS)
         // An exam you already sat isn't "coming up" — it's on the work list
         // waiting for a score, and repeating it here would be the app nagging
-        // about something you can't do anything about.
+        // about something you can't do anything about. Same for homework you
+        // already handed in: due-soon is the queue, not the gradebook.
         .filter((r) => r.due.type !== 'past')
         .sort((x, y) => x.due.date - y.due.date),
     [assignments, now],

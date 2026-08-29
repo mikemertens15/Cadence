@@ -277,12 +277,14 @@ test('graded work, uncounted work and a test you already sat all drop out', () =
       work('graded', 2 * DAY, { points_earned: 90 }),
       work('not-graded-by-the-course', 2 * DAY, { counts_toward_grade: false }),
       work('exam-already-sat', -1 * DAY, { kind: 'test' }),
+      work('handed-in', -1 * DAY, { status: 'submitted' }),
       work('still-owed', -1 * DAY),
     ],
     BASE,
   );
   // Only the overdue problem set survives — and at full urgency, because it is
-  // still owed in a way a test you have taken can never be.
+  // still owed in a way a test you have taken, or homework you have already
+  // handed in, can never be.
   assert.deepEqual(rows.map((r) => r.assignment.id), ['still-owed']);
   assert.equal(rows[0].urgency, 1);
 });
@@ -393,6 +395,27 @@ test('a grade an hour cannot move is not a reason to study', () => {
   assert.equal(plan[1].pressure.grade, 0); // nothing left to score on
   assert.equal(plan[0].pressure.grade, 1); // sitting on the cutoff with work left
   assert.ok(plan[1].reasons.some((r) => r.kind === 'settled'));
+});
+
+test('scores still out are not a reason to study, and are not called settled', () => {
+  const waiting = {
+    pct: 80,
+    hasGrades: true,
+    remainingCount: 0,
+    remainingPossible: 0,
+    pendingCount: 2,
+    pendingPossible: 200,
+  };
+
+  const plan = studyPlan({
+    entries: [entry('c1', 'Waiting', { grade: waiting })],
+    sessions: [],
+    now: BASE,
+  });
+
+  assert.equal(plan[0].pressure.grade, 0);
+  assert.ok(plan[0].reasons.some((r) => r.kind === 'waiting'));
+  assert.ok(!plan[0].reasons.some((r) => r.kind === 'settled'));
 });
 
 test('a course with no grades yet says so rather than being ranked as an A', () => {

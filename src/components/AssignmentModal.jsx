@@ -859,28 +859,38 @@ function remembered(courses) {
   }
 }
 
+// Points to show in the score box. Prefer the stored point total; if the
+// professor only handed back a percentage, convert so the box still has a
+// number in it rather than looking ungraded.
+function scoreDraft(assignment) {
+  if (assignment.points_earned != null && assignment.points_earned !== '') {
+    return String(assignment.points_earned);
+  }
+  const pct = Number(assignment.score_pct);
+  const possible = Number(assignment.points_possible);
+  if (Number.isFinite(pct) && possible > 0) {
+    return String(Math.round(((pct / 100) * possible) * 100) / 100);
+  }
+  return '';
+}
+
 // Small inline score editor, used by the grades table and the work list. Holds
 // its own draft so a half-typed "9" in a 95 never briefly becomes the score, and
 // commits on blur or Enter.
 export function ScoreInput({ assignment, onCommit, width = 62 }) {
-  const [draft, setDraft] = useState(
-    assignment.points_earned == null ? '' : String(assignment.points_earned),
-  );
+  const [draft, setDraft] = useState(() => scoreDraft(assignment));
   const [focused, setFocused] = useState(false);
 
   // While the field isn't being edited, the row's real value wins — a realtime
   // update from another device should show up here too.
-  const shown = focused
-    ? draft
-    : assignment.points_earned == null
-      ? ''
-      : String(assignment.points_earned);
+  const shown = focused ? draft : scoreDraft(assignment);
 
   const commit = () => {
     const trimmed = draft.trim();
     const next = trimmed === '' ? null : Number(trimmed);
-    const current = assignment.points_earned == null ? null : Number(assignment.points_earned);
-    if (next === current || (next != null && !Number.isFinite(next))) return;
+    const current = scoreDraft(assignment);
+    const currentNum = current === '' ? null : Number(current);
+    if (next === currentNum || (next != null && !Number.isFinite(next))) return;
     onCommit(next);
   };
 
@@ -889,7 +899,7 @@ export function ScoreInput({ assignment, onCommit, width = 62 }) {
       value={shown}
       onFocus={() => {
         setFocused(true);
-        setDraft(assignment.points_earned == null ? '' : String(assignment.points_earned));
+        setDraft(scoreDraft(assignment));
       }}
       onBlur={() => {
         setFocused(false);
@@ -899,7 +909,7 @@ export function ScoreInput({ assignment, onCommit, width = 62 }) {
       onKeyDown={(e) => {
         if (e.key === 'Enter') e.currentTarget.blur();
         if (e.key === 'Escape') {
-          setDraft(assignment.points_earned == null ? '' : String(assignment.points_earned));
+          setDraft(scoreDraft(assignment));
           e.currentTarget.blur();
         }
       }}

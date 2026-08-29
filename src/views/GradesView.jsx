@@ -6,7 +6,7 @@ import { useSemester } from '../data/SemesterProvider';
 import { useCourseGrade, useTermGrades, useGpa, useTermGpaPlan, EMPTY_OVERRIDES } from '../data/grades';
 import { courseTag } from '../courses';
 import { useIsPhone } from '../useMediaQuery';
-import { isGraded } from '../grading/engine';
+import { isGraded, isAwaitingScore } from '../grading/engine';
 import {
   Card,
   SectionHeading,
@@ -23,6 +23,12 @@ import {
 import { PrimaryButton, GhostButton, Chip, inputStyle } from '../components/Modal';
 import { DegreeProgress } from '../components/DegreeProgress';
 import { ScoreInput, PresentSwitch } from '../components/AssignmentModal';
+
+function dropKey(obj, key) {
+  const next = { ...obj };
+  delete next[key];
+  return next;
+}
 
 // Where the app earns its keep. The list answers "how am I doing"; the detail
 // answers the two questions that actually change behaviour — "what happens if
@@ -79,6 +85,7 @@ export function GradesView({ onOpenCourse, onAddCourse, onOpenDegree, navigate }
                 {course.code ? `${course.code} · ` : ''}
                 {fmtCredits(course.credit_hours)} cr
                 {grade.remainingCount > 0 ? ` · ${grade.remainingCount} left` : ''}
+                {grade.pendingCount > 0 ? ` · ${grade.pendingCount} waiting` : ''}
                 {/* A pass/fail lab or a course you withdrew from is still a
                     course with work in it — but its grade means something
                     different, and a row that doesn't say so is a row that
@@ -197,7 +204,7 @@ function GpaPanel({ gpa, phone, degree = true }) {
 // ------------------------------------------------------------------- detail
 
 export function CourseGradeView({ courseId, onEditCourse, onOpenAssignment, navigate }) {
-  const { courseById, setScore } = useSemester();
+  const { courseById, setScore, updateAssignment } = useSemester();
   const phone = useIsPhone();
 
   // What-ifs are held as the raw text of a *points* score, keyed by assignment —
@@ -317,7 +324,14 @@ export function CourseGradeView({ courseId, onEditCourse, onOpenAssignment, navi
             setWhatIf={setWhatIf}
             clearWhatIf={() => setWhatIf({})}
             simulating={simulating}
-            onScore={(id, v) => setScore(id, { pointsEarned: v })}
+            onScore={(id, v) => {
+              setWhatIf((w) => (id in w ? dropKey(w, id) : w));
+              setScore(id, { pointsEarned: v });
+            }}
+            onToggleSubmitted={(a) => {
+              setWhatIf((w) => (a.id in w ? dropKey(w, a.id) : w));
+              updateAssignment(a.id, { status: a.status === 'submitted' ? 'todo' : 'submitted' });
+            }}
             onOpen={onOpenAssignment}
             phone={phone}
           />
@@ -392,10 +406,13 @@ function Breakdown({ grade, color, phone }) {
                 {cat.gradedCount === 0
                   ? cat.remainingCount + cat.unenteredCount > 0
                     ? `${cat.remainingCount + cat.unenteredCount} coming · not counted yet`
-                    : 'Nothing here yet'
+                    : cat.pendingCount > 0
+                      ? `${cat.pendingCount} waiting on a grade`
+                      : 'Nothing here yet'
                   : `${fmtPoints(cat.earned)} / ${fmtPoints(cat.possible)} pts` +
                     (cat.droppedKeys.length ? ` · ${cat.droppedKeys.length} dropped` : '') +
                     (cat.remainingCount > 0 ? ` · ${cat.remainingCount} left` : '') +
+                    (cat.pendingCount > 0 ? ` · ${cat.pendingCount} waiting` : '') +
                     (cat.unenteredCount > 0 ? ` · ${cat.unenteredCount} not entered` : '')}
               </div>
 
@@ -445,19 +462,38 @@ function Solver({ solved, target, setTarget, scale, phone }) {
     [scale],
   );
 
+  const awaiting =
+    (solved.remainingCount ?? 0) === 0 &&
+    (solved.unenteredCount ?? 0) === 0 &&
+    (solved.pendingCount ?? 0) > 0;
+  const pendingNote =
+    !awaiting && solved.pendingCount > 0
+      ? ` ${solved.pendingCount} still waiting on a grade — that will move this.`
+      : '';
+
   const message = () => {
     switch (solved.status) {
       case 'locked':
         return {
           headline: 'Already yours',
-          body: `Even a zero on everything left holds ${fmtPct(solved.floor)}. This one is banked.`,
+          body: awaiting
+            ? `Even zeros on the ${solved.pendingCount} score${solved.pendingCount === 1 ? '' : 's'} still out hold ${fmtPct(solved.floor)}. This one is banked.`
+            : `Even a zero on everything left holds ${fmtPct(solved.floor)}. This one is banked.${pendingNote}`,
           tone: tone.green,
         };
       case 'reachable': {
         // Two numbers, because they are two different kinds of left. Rows you
         // have entered and not scored are work you can see; rows the syllabus
         // promises and nobody has typed in are work you can't — and the average
-        // below is over both, so both have to be said.
+        // below is over both, so both have to be said. Scores already sitting
+        // in a gradebook are a third kind, and they are not "left".
+        if (awaiting) {
+          return {
+            headline: `${fmtPct(solved.needed)} average`,
+            body: `on the ${solved.pendingCount} score${solved.pendingCount === 1 ? '' : 's'} still out (${fmtPoints(solved.pendingPossible)} points).`,
+            tone: colors.ink,
+          };
+        }
         const left = solved.remainingCount + solved.unenteredCount;
         return {
           headline: `${fmtPct(solved.needed)} average`,
@@ -465,20 +501,25 @@ function Solver({ solved, target, setTarget, scale, phone }) {
             `on the ${left} piece${left === 1 ? '' : 's'} of work left` +
             (solved.unenteredCount > 0
               ? ` — ${solved.remainingCount} entered, ${solved.unenteredCount} still to come.`
-              : ` (${fmtPoints(solved.remainingPossible)} points).`),
+              : ` (${fmtPoints(solved.remainingPossible)} points).`) +
+            pendingNote,
           tone: colors.ink,
         };
       }
       case 'stretch':
         return {
           headline: `${fmtPct(solved.needed)} average`,
-          body: `— more than full marks. Acing everything left reaches ${fmtPct(solved.ceiling)} (${solved.ceilingLetter}).`,
+          body: awaiting
+            ? `— more than full marks. If those come back perfect you reach ${fmtPct(solved.ceiling)} (${solved.ceilingLetter}).`
+            : `— more than full marks. Acing everything left reaches ${fmtPct(solved.ceiling)} (${solved.ceilingLetter}).${pendingNote}`,
           tone: tone.amberText,
         };
       case 'impossible':
         return {
           headline: 'Out of reach',
-          body: `Perfect scores on everything left top out at ${fmtPct(solved.ceiling)} (${solved.ceilingLetter}).`,
+          body: awaiting
+            ? `Even full marks on the scores still out top out at ${fmtPct(solved.ceiling)} (${solved.ceilingLetter}).`
+            : `Perfect scores on everything left top out at ${fmtPct(solved.ceiling)} (${solved.ceilingLetter}).${pendingNote}`,
           tone: tone.red,
         };
       case 'no-remaining':
@@ -546,7 +587,7 @@ function Solver({ solved, target, setTarget, scale, phone }) {
 
         {/* The two ends of the range. Between them is every grade still
             available to you, which is usually the thing worth knowing. */}
-        {solved.remainingCount + solved.unenteredCount > 0 && (
+        {solved.remainingCount + solved.unenteredCount + (solved.pendingCount ?? 0) > 0 && (
           <div
             style={{
               display: 'flex',
@@ -556,8 +597,16 @@ function Solver({ solved, target, setTarget, scale, phone }) {
               borderTop: `1px solid ${colors.divider}`,
             }}
           >
-            <Endpoint label="Zero on everything left" pct={solved.floor} letter={solved.floorLetter} />
-            <Endpoint label="Full marks on everything left" pct={solved.ceiling} letter={solved.ceilingLetter} />
+            <Endpoint
+              label={awaiting ? 'If those come back as zeros' : 'Zero on everything left'}
+              pct={solved.floor}
+              letter={solved.floorLetter}
+            />
+            <Endpoint
+              label={awaiting ? 'If those come back as full marks' : 'Full marks on everything left'}
+              pct={solved.ceiling}
+              letter={solved.ceilingLetter}
+            />
           </div>
         )}
       </Card>
@@ -581,7 +630,17 @@ function Endpoint({ label, pct, letter }) {
 
 // Every assignment in the course, grouped by category, with two ways to put a
 // number in: the real score, and — for anything ungraded — a hypothetical one.
-function Assignments({ grade, whatIf, setWhatIf, clearWhatIf, simulating, onScore, onOpen, phone }) {
+function Assignments({
+  grade,
+  whatIf,
+  setWhatIf,
+  clearWhatIf,
+  simulating,
+  onScore,
+  onToggleSubmitted,
+  onOpen,
+  phone,
+}) {
   const byCategory = useMemo(() => {
     const map = new Map(grade.categories.map((c) => [c.id, []]));
     for (const a of grade.assignments) {
@@ -660,6 +719,7 @@ function Assignments({ grade, whatIf, setWhatIf, clearWhatIf, simulating, onScor
                   whatIf={whatIf[a.id] ?? ''}
                   setWhatIf={setWhatIf}
                   onScore={onScore}
+                  onToggleSubmitted={onToggleSubmitted}
                   onOpen={onOpen}
                   phone={phone}
                 />
@@ -819,8 +879,12 @@ function TargetRow({ row, navigate }) {
       return { text: `${letter} — nothing left that could change it`, color: tone.amberText };
     if (s.status === 'impossible' || s.status === 'stretch')
       return { text: `${letter} — out of reach now`, color: tone.red };
+    const awaiting = (s.remainingCount ?? 0) === 0 && (s.pendingCount ?? 0) > 0;
+    const n = awaiting ? s.pendingCount : s.remainingCount;
     return {
-      text: `${letter} — ${fmtPct(s.needed)} on the ${s.remainingCount} left`,
+      text: awaiting
+        ? `${letter} — ${fmtPct(s.needed)} on the ${n} still out`
+        : `${letter} — ${fmtPct(s.needed)} on the ${n} left`,
       color: colors.ink,
     };
   };
@@ -873,16 +937,38 @@ function AssignmentScoreRow({
   whatIf,
   setWhatIf,
   onScore,
+  onToggleSubmitted,
   onOpen,
   phone,
 }) {
   const graded = isGraded(a);
+  const awaiting = isAwaitingScore(a);
+  const event = isEvent(a.kind);
   const possible = Number(a.points_possible) || 0;
-  // Graded work borrows the event dialect, which never says "late". Once a
-  // score is in, whether the thing was handed in past its deadline is history
-  // the gradebook has already priced in — "6d late" beside a 46/50 reads as an
-  // outstanding problem rather than a date.
-  const due = describeDue(a.due_at, undefined, { event: isEvent(a.kind) || graded });
+  // Graded work and work already handed in borrow the event dialect, which
+  // never says "late". Once it's in, whether it crossed the deadline is
+  // history — "6d late" beside a paper you're waiting on reads as a problem
+  // you still have, not a date.
+  const due = describeDue(a.due_at, undefined, {
+    event: event || graded,
+    submitted: awaiting && !event,
+  });
+
+  const subtitle = dropped
+    ? 'Dropped — lowest score'
+    : awaiting
+      ? event
+        ? 'Taken — waiting on a grade'
+        : 'Submitted — waiting on a grade'
+      : due.type === 'none'
+        ? 'No due date'
+        : due.label;
+
+  // The real score box is for numbers that have landed: already graded, or
+  // handed in and waiting. Future work keeps the dashed what-if, so typing
+  // 80 on an exam you haven't sat doesn't save a fake grade. Attendance
+  // categories keep the present/missed switch either way.
+  const logScore = graded || awaiting;
 
   return (
     <div
@@ -895,26 +981,45 @@ function AssignmentScoreRow({
         opacity: dropped ? 0.5 : 1,
       }}
     >
-      <button onClick={() => onOpen(a)} style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-          <span
-            style={{
-              font: `600 13.5px ${fonts.sans}`,
-              color: colors.ink,
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              textDecoration: dropped ? 'line-through' : 'none',
-            }}
-          >
-            {a.title}
-          </span>
-          <KindTag kind={a.kind} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <button onClick={() => onOpen(a)} style={{ width: '100%', textAlign: 'left' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <span
+              style={{
+                font: `600 13.5px ${fonts.sans}`,
+                color: colors.ink,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                textDecoration: dropped ? 'line-through' : 'none',
+              }}
+            >
+              {a.title}
+            </span>
+            <KindTag kind={a.kind} />
+          </div>
+        </button>
+        <div
+          style={{
+            font: `400 11px ${fonts.sans}`,
+            color: awaiting ? tone.blue : colors.faint,
+            marginTop: 2,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}
+        >
+          <span>{subtitle}</span>
+          {!event && !graded && !dropped && !completion && (
+            <button
+              onClick={() => onToggleSubmitted(a)}
+              style={{ font: `600 11px ${fonts.sans}`, color: awaiting ? colors.muted2 : colors.accent }}
+            >
+              {awaiting ? 'Not submitted' : 'Mark submitted'}
+            </button>
+          )}
         </div>
-        <div style={{ font: `400 11px ${fonts.sans}`, color: colors.faint, marginTop: 2 }}>
-          {dropped ? 'Dropped — lowest score' : due.type === 'none' ? 'No due date' : due.label}
-        </div>
-      </button>
+      </div>
 
       {completion ? (
         <PresentSwitch
@@ -923,7 +1028,7 @@ function AssignmentScoreRow({
           possible={possible}
           onScore={onScore}
         />
-      ) : graded ? (
+      ) : logScore ? (
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, flexShrink: 0 }}>
           <ScoreInput assignment={a} onCommit={(v) => onScore(a.id, v)} width={phone ? 52 : 58} />
           <span className="cad-nums" style={{ font: `500 11.5px ${fonts.sans}`, color: colors.faint }}>

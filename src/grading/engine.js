@@ -2,6 +2,7 @@
 // which doesn't do Vite's extensionless resolution. The grade math is the part
 // most worth testing outside a browser.
 import { DEFAULT_SCALE, letterFor, gradePoints } from './scale.js';
+import { isEvent } from '../assignments.js';
 
 // The grade math. Pure functions over plain rows — no React, no Supabase — so
 // the numbers a student is going to trust can be tested directly, and so the
@@ -81,6 +82,27 @@ function scoreOf(a, override) {
 }
 
 export const isGraded = (a, overrides = {}) => scoreOf(a, num(overrides[a.id])) != null;
+
+/**
+ * Handed in, sitting in a gradebook, no number back yet.
+ *
+ * Distinct from remaining work: you cannot change this score, and nagging about
+ * it as overdue (or projecting "what you need on it" as if you still had to sit
+ * down and do it) is the wrong sentence. Past exams land here too — you sat
+ * them, and what you're waiting on is the grade, same as homework you ticked
+ * submitted.
+ *
+ * A what-if override counts as a score, so a simulated row is not awaiting.
+ */
+export function isAwaitingScore(a, overrides = {}, now = new Date()) {
+  if (!a || isGraded(a, overrides)) return false;
+  if (a.status === 'submitted') return true;
+  if (isEvent(a.kind) && a.due_at) {
+    const d = new Date(a.due_at);
+    return Number.isFinite(d.getTime()) && d < now;
+  }
+  return false;
+}
 
 /**
  * Drop the N lowest scores in a category — but only the drops that are already
@@ -238,11 +260,18 @@ function summarize(categories, itemsByCat, enteredByCat = null) {
  * how the what-if simulator works: it doesn't have its own math, it just calls
  * this with a few pretend scores in hand.
  */
-export function gradeCourse({ categories = [], assignments = [], overrides = {}, scale = DEFAULT_SCALE }) {
+export function gradeCourse({
+  categories = [],
+  assignments = [],
+  overrides = {},
+  scale = DEFAULT_SCALE,
+  now = new Date(),
+}) {
   const known = new Set(categories.map((c) => c.id));
 
   const itemsByCat = new Map();
   const remainingByCat = new Map();
+  const pendingByCat = new Map();
   // Assignments with no category (or one that was deleted out from under them)
   // can't be weighted, so they sit outside the grade — surfaced as a count so
   // the UI can say so rather than silently dropping them.
@@ -253,6 +282,12 @@ export function gradeCourse({ categories = [], assignments = [], overrides = {},
   // opposite things — one is a gap in the data worth nagging about, the other is
   // a fact about the course and nothing to fix.
   const notCounted = [];
+
+  const push = (map, id, item) => {
+    const list = map.get(id) ?? [];
+    list.push(item);
+    map.set(id, list);
+  };
 
   for (const a of assignments) {
     if (a.counts_toward_grade === false) {
@@ -268,26 +303,32 @@ export function gradeCourse({ categories = [], assignments = [], overrides = {},
       continue;
     }
     if (score) {
-      const list = itemsByCat.get(a.category_id) ?? [];
-      list.push({ key: a.id, ...score });
-      itemsByCat.set(a.category_id, list);
+      push(itemsByCat, a.category_id, { key: a.id, ...score });
     } else {
       const possible = num(a.points_possible) ?? 0;
       if (possible > 0) {
-        const list = remainingByCat.get(a.category_id) ?? [];
-        list.push({ key: a.id, possible });
-        remainingByCat.set(a.category_id, list);
+        // Submitted (or a test already sat) is not work still ahead of you —
+        // it's a score that hasn't come back. Splitting it from remaining is
+        // what stops "3 left" meaning "3 you already handed in".
+        if (isAwaitingScore(a, overrides, now)) {
+          push(pendingByCat, a.category_id, { key: a.id, possible });
+        } else {
+          push(remainingByCat, a.category_id, { key: a.id, possible });
+        }
       }
     }
   }
 
   // Every row filed in a category, graded or not — what applyDrops needs to
-  // know whether a drop still has somewhere else to land.
+  // know whether a drop still has somewhere else to land. Pending counts:
+  // the row exists, it just hasn't come back with a number.
   const enteredByCat = new Map();
   for (const c of categories) {
     enteredByCat.set(
       c.id,
-      (itemsByCat.get(c.id)?.length ?? 0) + (remainingByCat.get(c.id)?.length ?? 0),
+      (itemsByCat.get(c.id)?.length ?? 0) +
+        (remainingByCat.get(c.id)?.length ?? 0) +
+        (pendingByCat.get(c.id)?.length ?? 0),
     );
   }
 
@@ -295,14 +336,21 @@ export function gradeCourse({ categories = [], assignments = [], overrides = {},
 
   const categoriesOut = cats.map((c) => {
     const remaining = remainingByCat.get(c.id) ?? [];
+    const pending = pendingByCat.get(c.id) ?? [];
     return {
       ...c,
       remainingCount: remaining.length,
       remainingPossible: sum(remaining, (r) => r.possible),
+      pendingCount: pending.length,
+      pendingPossible: sum(pending, (r) => r.possible),
       // What one of these is worth, for the rows that don't exist yet. The most
       // common value rather than the mean: one 200-point makeup quiz should not
       // redefine what a quiz is worth for the four still to come.
-      typicalPossible: typicalPossible([...(itemsByCat.get(c.id) ?? []), ...remaining]),
+      typicalPossible: typicalPossible([
+        ...(itemsByCat.get(c.id) ?? []),
+        ...remaining,
+        ...pending,
+      ]),
     };
   });
 
@@ -319,6 +367,8 @@ export function gradeCourse({ categories = [], assignments = [], overrides = {},
     notCountedCount: notCounted.length,
     remainingCount: sum(categoriesOut, (c) => c.remainingCount),
     remainingPossible: sum(categoriesOut, (c) => c.remainingPossible),
+    pendingCount: sum(categoriesOut, (c) => c.pendingCount),
+    pendingPossible: sum(categoriesOut, (c) => c.pendingPossible),
     // Work the syllabus promises that nobody has typed in. Held apart from
     // `remainingCount` because they are different kinds of missing: one is a
     // row waiting for a score, the other is a row waiting to exist.
@@ -374,7 +424,7 @@ function unenteredItems({ categories, assignments }) {
 // rules and weight re-normalization apply to the projected term exactly as they
 // will to the real one — and in a projected term every score exists, so every
 // drop the syllabus grants is spent rather than held.
-function projectAt({ categories, assignments, overrides, frac, unentered = [] }) {
+function projectAt({ categories, assignments, overrides, frac, unentered = [], fillKeys = null }) {
   const known = new Set(categories.map((c) => c.id));
   const itemsByCat = new Map();
 
@@ -391,10 +441,15 @@ function projectAt({ categories, assignments, overrides, frac, unentered = [] })
     // Scored first, so extra credit — worth nothing and earning something —
     // reaches the projection the same way it reaches the live grade. An
     // unscored zero-point row is skipped: there is nothing there to project.
+    // `fillKeys` is the pool being solved for: remaining work you can still
+    // do, or — once that's empty — scores sitting in a gradebook. Anything
+    // outside the set stays ungraded, the same way it does on the live number.
     const score = scoreOf(a, num(overrides[a.id]));
     const possible = num(a.points_possible) ?? 0;
     if (score) push(a.category_id, { key: a.id, ...score });
-    else if (possible > 0) push(a.category_id, { key: a.id, earned: frac * possible, possible });
+    else if (possible > 0 && (fillKeys == null || fillKeys.has(a.id))) {
+      push(a.category_id, { key: a.id, earned: frac * possible, possible });
+    }
   }
 
   for (const u of unentered) {
@@ -423,26 +478,45 @@ function projectAt({ categories, assignments, overrides, frac, unentered = [] })
  * you ace it.
  */
 export function neededOnRemaining(
-  { categories = [], assignments = [], overrides = {}, scale = DEFAULT_SCALE },
+  { categories = [], assignments = [], overrides = {}, scale = DEFAULT_SCALE, now = new Date() },
   targetPct,
 ) {
   const target = num(targetPct);
   const known = new Set(categories.map((c) => c.id));
 
-  const remaining = assignments.filter(
-    (a) =>
-      a.counts_toward_grade !== false &&
-      a.category_id &&
-      known.has(a.category_id) &&
-      (num(a.points_possible) ?? 0) > 0 &&
-      scoreOf(a, num(overrides[a.id])) == null,
-  );
+  const counts = (a) =>
+    a.counts_toward_grade !== false &&
+    a.category_id &&
+    known.has(a.category_id) &&
+    (num(a.points_possible) ?? 0) > 0 &&
+    scoreOf(a, num(overrides[a.id])) == null;
 
+  // Work you can still do, versus work that's in and waiting on a number.
+  // The solver fills one pool or the other, never both: if you still have a
+  // final to sit, "what do I need" is about that final, and a paper already
+  // handed in stays out of the grade the same way it does on the live number.
+  // Once nothing is left to hand in, the pool becomes the scores still out —
+  // "those need to come back at 88%" is a different question, and the useful
+  // one.
+  const remaining = assignments.filter((a) => counts(a) && !isAwaitingScore(a, overrides, now));
+  const pending = assignments.filter((a) => counts(a) && isAwaitingScore(a, overrides, now));
   const unentered = unenteredItems({ categories, assignments });
+  const unenteredCount = sum(unentered, (u) => u.count);
+  const fillingPending = remaining.length === 0 && unenteredCount === 0 && pending.length > 0;
+  const fillKeys = new Set((fillingPending ? pending : remaining).map((a) => a.id));
+  const projectedUnentered = fillingPending ? [] : unentered;
 
-  const at = (frac) => projectAt({ categories, assignments, overrides, frac, unentered });
-  const floor = at(0); // bomb everything left
-  const ceiling = at(1); // ace everything left
+  const at = (frac) =>
+    projectAt({
+      categories,
+      assignments,
+      overrides,
+      frac,
+      unentered: projectedUnentered,
+      fillKeys,
+    });
+  const floor = at(0); // bomb the pool (or the live grade, if the pool is empty)
+  const ceiling = at(1); // ace the pool
   const base = {
     target,
     floor,
@@ -451,11 +525,13 @@ export function neededOnRemaining(
     ceilingLetter: letterFor(ceiling, scale),
     remainingCount: remaining.length,
     remainingPossible: sum(remaining, (a) => num(a.points_possible) ?? 0),
+    pendingCount: pending.length,
+    pendingPossible: sum(pending, (a) => num(a.points_possible) ?? 0),
     // The work the syllabus promises but the app has never been shown. Counted
     // apart from `remainingCount` because "eight things left" and "eight things
     // left, four of which you haven't written down" are answers a person acts
     // on differently — and because the number below is an average over both.
-    unenteredCount: sum(unentered, (u) => u.count),
+    unenteredCount,
     unenteredPossible: sum(unentered, (u) => u.count * u.possible),
     // Categories with weight that never said how many items they'd have. Every
     // number here assumes what's entered is all there is; these are where that
@@ -467,10 +543,9 @@ export function neededOnRemaining(
 
   if (target == null) return { ...base, status: 'no-target', needed: null };
 
-  // Nothing left to score on: the grade is what it is. Work the syllabus
-  // promises but nobody has entered still counts as left — the course is not
-  // finished just because the typing is behind.
-  if (!remaining.length && !base.unenteredCount) {
+  // Nothing left to score on, nothing waiting, and nothing the syllabus still
+  // promises: the grade is what it is.
+  if (!remaining.length && !unenteredCount && !pending.length) {
     return {
       ...base,
       status: 'no-remaining',
