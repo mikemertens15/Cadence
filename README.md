@@ -75,6 +75,14 @@ VITE_SITE_URL=https://<production-host>
 Other scripts: `npm test` (grade math and the study plan), `npm run lint`,
 `npm run build`.
 
+`npm run build` needs those two variables even though it never calls Supabase.
+`src/lib/supabase.js` throws at module scope when they're missing, and with the
+values absent the check folds to a constant at build time — so the bundler
+proves the rest of the app is unreachable and drops it. The build still exits 0
+and still prints a plausible size, because React is what's left. If you're
+verifying a change by building it, set them (any syntactically valid values will
+do) or you're inspecting an empty bundle.
+
 The schema lives in [`supabase/migrations/`](supabase/migrations/) — `0001_init.sql`
 for the core tables, `0002_exams_history_breaks.sql` for exams, past semesters,
 the degree goal and days off, `0003_programs_practice_work_and_basis.sql`

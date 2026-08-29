@@ -1,6 +1,51 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { colors, shadows, fonts } from '../theme';
 import { useAuth } from './AuthProvider';
+
+// Sending mail is the one thing this screen does that costs something finite.
+// The auth email allowance is a bucket for the whole project, not per person —
+// so an impatient second click doesn't just repeat a request, it spends part of
+// the same budget everyone else signing up today is drawing from. Two clicks
+// three seconds apart is what actually emptied it.
+//
+// So a send locks both email buttons briefly, and a refusal locks them for
+// longer: there is nothing to gain from re-asking for mail the server has
+// already declined to send.
+const SEND_COOLDOWN_MS = 60_000;
+const LIMIT_COOLDOWN_MS = 15 * 60_000;
+
+// Held in localStorage rather than in state alone, because reloading is the
+// obvious thing to try when a page looks stuck, and a reload shouldn't hand
+// back a fresh allowance.
+const COOL_KEY = 'cadence.mailCooldownUntil';
+
+function readCooldown() {
+  try {
+    const until = Number(localStorage.getItem(COOL_KEY));
+    return Number.isFinite(until) && until > Date.now() ? until : 0;
+  } catch {
+    return 0; // private browsing throws; the in-session value still applies
+  }
+}
+
+function writeCooldown(until) {
+  try {
+    localStorage.setItem(COOL_KEY, String(until));
+  } catch {
+    /* same — nothing to persist to, nothing to do about it */
+  }
+}
+
+// The shared allowance comes back as a 429. Its own message — "email rate limit
+// exceeded" — reads like an accusation, and the one thing it fails to say is
+// that the cap belongs to the app rather than to the person reading it.
+const isRateLimited = (err) => err?.status === 429 || err?.code === 'over_email_send_rate_limit';
+
+// A number you can wait out, or one you should go and do something else about.
+function waitLabel(ms) {
+  const s = Math.ceil(ms / 1000);
+  return s > 90 ? `${Math.ceil(s / 60)} min` : `${s}s`;
+}
 
 // Email + password is the everyday path (no inbox round-trip); the magic link
 // covers the first visit, a new device, and anyone who never set a password.
@@ -12,6 +57,23 @@ export function SignIn() {
   const [sent, setSent] = useState(null); // null | 'link' | 'reset'
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [coolUntil, setCoolUntil] = useState(readCooldown);
+
+  // Tick once a second while a countdown is running, and only then — the last
+  // tick stops the interval and re-renders with the buttons live again.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (coolUntil <= Date.now()) return;
+    const id = setInterval(() => {
+      setTick((n) => n + 1);
+      if (coolUntil <= Date.now()) clearInterval(id);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [coolUntil]);
+
+  const coolLeft = Math.max(0, coolUntil - Date.now());
+  const cooling = coolLeft > 0;
+  const noMail = busy || cooling || !email.trim();
 
   const canSubmit = email.trim() && password && !busy;
   // An expired or already-used email link reports itself in the URL; show that
@@ -37,17 +99,33 @@ export function SignIn() {
     }
   }
 
+  function startCooldown(ms) {
+    const until = Date.now() + ms;
+    writeCooldown(until);
+    setCoolUntil(until);
+  }
+
   // Both email paths behave identically apart from which mail goes out.
   async function mail(kind) {
-    if (!email.trim() || busy) return;
+    if (noMail) return;
     setBusy(true);
     setError('');
     clearLinkError();
     try {
       await (kind === 'reset' ? sendPasswordReset(email) : signInWithMagicLink(email));
+      startCooldown(SEND_COOLDOWN_MS);
       setSent(kind);
     } catch (err) {
-      setError(err?.message || 'Something went wrong. Try again.');
+      if (isRateLimited(err)) {
+        startCooldown(LIMIT_COOLDOWN_MS);
+        setError(
+          'Cadence has sent as much mail as it\u2019s allowed to this hour \u2014 that\u2019s a limit on the app, ' +
+            'not on you, and nothing you do here will hurry it. If you already have a password, ' +
+            'sign in with it above; otherwise the link will go out once the hour turns over.',
+        );
+      } else {
+        setError(err?.message || 'Something went wrong. Try again.');
+      }
     } finally {
       setBusy(false);
     }
@@ -105,13 +183,19 @@ export function SignIn() {
             <button
               type="button"
               onClick={() => mail('reset')}
-              disabled={busy || !email.trim()}
-              title={email.trim() ? 'Email a reset link' : 'Enter your email first'}
+              disabled={noMail}
+              title={
+                cooling
+                  ? `Another email can go out in ${waitLabel(coolLeft)}`
+                  : email.trim()
+                    ? 'Email a reset link'
+                    : 'Enter your email first'
+              }
               style={{
                 font: `600 12px ${fonts.sans}`,
                 color: colors.accent,
-                opacity: busy || !email.trim() ? 0.5 : 1,
-                cursor: busy || !email.trim() ? 'default' : 'pointer',
+                opacity: noMail ? 0.5 : 1,
+                cursor: noMail ? 'default' : 'pointer',
               }}
             >
               Forgot password?
@@ -162,15 +246,17 @@ export function SignIn() {
             <button
               type="button"
               onClick={() => mail('link')}
-              disabled={busy || !email.trim()}
+              disabled={noMail}
               style={{
                 font: `600 13px ${fonts.sans}`,
                 color: colors.accent,
-                opacity: busy || !email.trim() ? 0.6 : 1,
-                cursor: busy || !email.trim() ? 'default' : 'pointer',
+                opacity: noMail ? 0.6 : 1,
+                cursor: noMail ? 'default' : 'pointer',
               }}
             >
-              Email me a sign-in link
+              {/* The countdown is the whole point: a disabled button with no
+                  reason on it is the thing that gets clicked ten more times. */}
+              {cooling ? `Another link in ${waitLabel(coolLeft)}` : 'Email me a sign-in link'}
             </button>
           </div>
         </form>

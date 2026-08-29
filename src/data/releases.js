@@ -8,6 +8,17 @@
 
 export const RELEASES = [
   {
+    version: '1.2.2',
+    date: '2026-08-29',
+    name: 'One link at a time',
+    notes: [
+      [
+        'fixed',
+        'The button that emails you a sign-in link no longer takes a second click. Cadence gets a fixed number of emails an hour, and it is one pot shared by everyone signing in rather than an allowance each — so a link that takes thirty seconds to arrive is very hard not to ask for twice, and the second ask quietly spends somebody else’s turn. Sending one now holds the button for a minute with the wait counting down on it, and holds it longer if the pot is actually empty. When it is empty the app says so in those words, instead of passing along the server’s “email rate limit exceeded”, which reads like an accusation and tells you nothing about what to do next — which is to sign in with your password if you have one, and otherwise to wait for the hour to turn over.',
+      ],
+    ],
+  },
+  {
     version: '1.2.1',
     date: '2026-08-28',
     name: 'The link comes back',
