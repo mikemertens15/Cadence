@@ -41,6 +41,23 @@ function writeCooldown(until) {
 // that the cap belongs to the app rather than to the person reading it.
 const isRateLimited = (err) => err?.status === 429 || err?.code === 'over_email_send_rate_limit';
 
+// Turns what the server said into what the person needs to do next.
+//
+// The duplicate-account case is the one worth catching. With confirmations off,
+// signing up an address that already exists returns a real error rather than
+// the deliberately vague success Supabase gives when they're on — so the screen
+// can say the useful thing ("you already have one, sign in") instead of leaving
+// someone to guess why nothing happened.
+function formError(err, signingUp) {
+  const msg = err?.message || '';
+  if (signingUp && /already|exists|registered/i.test(msg))
+    return 'There\u2019s already an account on that address. Sign in below \u2014 or reset the password if you don\u2019t have it.';
+  if (signingUp) return msg || 'Could not create that account. Try again.';
+  if (/invalid/i.test(msg))
+    return "That didn't match. Reset it below, or create an account if you don't have one yet.";
+  return msg || 'Something went wrong. Try again.';
+}
+
 // A number you can wait out, or one you should go and do something else about.
 function waitLabel(ms) {
   const s = Math.ceil(ms / 1000);
@@ -50,11 +67,21 @@ function waitLabel(ms) {
 // Email + password is the everyday path (no inbox round-trip); the magic link
 // covers the first visit, a new device, and anyone who never set a password.
 export function SignIn() {
-  const { signInWithMagicLink, signInWithPassword, sendPasswordReset, linkError, clearLinkError } =
-    useAuth();
+  const {
+    signInWithMagicLink,
+    signInWithPassword,
+    signUpWithPassword,
+    sendPasswordReset,
+    linkError,
+    clearLinkError,
+  } = useAuth();
+  // 'in' for someone who already has an account, 'up' for someone who doesn't.
+  // Creating one costs no email at all, so it's a first-class path here rather
+  // than something you reach by asking for a link and hoping.
+  const [mode, setMode] = useState('in');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [sent, setSent] = useState(null); // null | 'link' | 'reset'
+  const [sent, setSent] = useState(null); // null | 'link' | 'reset' | 'confirm'
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [coolUntil, setCoolUntil] = useState(readCooldown);
@@ -75,10 +102,21 @@ export function SignIn() {
   const cooling = coolLeft > 0;
   const noMail = busy || cooling || !email.trim();
 
-  const canSubmit = email.trim() && password && !busy;
+  const signingUp = mode === 'up';
+  // Same rule the reset screen enforces, so a password is never valid in one
+  // place and rejected in the other.
+  const tooShort = signingUp && password.length > 0 && password.length < 8;
+  const canSubmit =
+    email.trim() && password && !busy && (!signingUp || password.length >= 8);
   // An expired or already-used email link reports itself in the URL; show that
   // once, then let normal form errors take over.
-  const notice = error || linkError;
+  const notice = error || linkError || (tooShort ? 'Use at least 8 characters.' : '');
+
+  function switchMode(next) {
+    setMode(next);
+    setError('');
+    clearLinkError();
+  }
 
   async function submit(e) {
     e?.preventDefault();
@@ -87,13 +125,20 @@ export function SignIn() {
     setError('');
     clearLinkError();
     try {
-      await signInWithPassword(email, password);
+      if (signingUp) {
+        const { needsConfirmation } = await signUpWithPassword(email, password);
+        // Only reachable while "Confirm email" is still on in the project's auth
+        // settings. With it off there is no inbox step and the session arrives
+        // here, which the provider picks up without this screen doing anything.
+        if (needsConfirmation) {
+          startCooldown(SEND_COOLDOWN_MS);
+          setSent('confirm');
+        }
+      } else {
+        await signInWithPassword(email, password);
+      }
     } catch (err) {
-      setError(
-        /invalid/i.test(err?.message || '')
-          ? "That didn't match. Reset it below, or use an email link if you never set one."
-          : err?.message || 'Something went wrong. Try again.',
-      );
+      setError(formError(err, signingUp));
     } finally {
       setBusy(false);
     }
@@ -140,8 +185,13 @@ export function SignIn() {
             Check your inbox
           </div>
           <div style={{ font: `400 14px/1.5 ${fonts.sans}`, color: colors.muted2, marginBottom: 22 }}>
-            We sent {sent === 'reset' ? 'a link to reset your password' : 'a sign-in link'} to{' '}
-            <b style={{ color: colors.ink }}>{email}</b>. Open it on this device to continue.
+            We sent{' '}
+            {sent === 'reset'
+              ? 'a link to reset your password'
+              : sent === 'confirm'
+                ? 'a link to confirm your account'
+                : 'a sign-in link'}{' '}
+            to <b style={{ color: colors.ink }}>{email}</b>. Open it on this device to continue.
           </div>
           <button
             onClick={() => setSent(null)}
@@ -153,10 +203,12 @@ export function SignIn() {
       ) : (
         <form onSubmit={submit}>
           <div style={{ font: `400 27px ${fonts.serif}`, color: colors.ink, marginBottom: 6 }}>
-            Where things stand
+            {signingUp ? 'Start your semester' : 'Where things stand'}
           </div>
           <div style={{ font: `400 14px/1.5 ${fonts.sans}`, color: colors.muted2, marginBottom: 22 }}>
-            Your classes, what&rsquo;s due, and the grade you actually have.
+            {signingUp
+              ? 'An email and a password, and you\u2019re in \u2014 nothing to go and click in your inbox.'
+              : 'Your classes, what\u2019s due, and the grade you actually have.'}
           </div>
 
           <Field label="Email">
@@ -180,30 +232,38 @@ export function SignIn() {
             }}
           >
             <label style={{ font: `600 12px ${fonts.sans}`, color: colors.muted2 }}>Password</label>
-            <button
-              type="button"
-              onClick={() => mail('reset')}
-              disabled={noMail}
-              title={
-                cooling
-                  ? `Another email can go out in ${waitLabel(coolLeft)}`
-                  : email.trim()
-                    ? 'Email a reset link'
-                    : 'Enter your email first'
-              }
-              style={{
-                font: `600 12px ${fonts.sans}`,
-                color: colors.accent,
-                opacity: noMail ? 0.5 : 1,
-                cursor: noMail ? 'default' : 'pointer',
-              }}
-            >
-              Forgot password?
-            </button>
+            {signingUp ? (
+              /* Nothing to recover yet, so the slot says what the password has
+                 to be rather than offering to email one. */
+              <span style={{ font: `500 12px ${fonts.sans}`, color: colors.muted }}>
+                At least 8 characters
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => mail('reset')}
+                disabled={noMail}
+                title={
+                  cooling
+                    ? `Another email can go out in ${waitLabel(coolLeft)}`
+                    : email.trim()
+                      ? 'Email a reset link'
+                      : 'Enter your email first'
+                }
+                style={{
+                  font: `600 12px ${fonts.sans}`,
+                  color: colors.accent,
+                  opacity: noMail ? 0.5 : 1,
+                  cursor: noMail ? 'default' : 'pointer',
+                }}
+              >
+                Forgot password?
+              </button>
+            )}
           </div>
           <input
             type="password"
-            autoComplete="current-password"
+            autoComplete={signingUp ? 'new-password' : 'current-password'}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="••••••••"
@@ -236,28 +296,49 @@ export function SignIn() {
               cursor: canSubmit ? 'pointer' : 'default',
             }}
           >
-            {busy ? 'Signing in…' : 'Sign in'}
+            {busy
+              ? signingUp
+                ? 'Creating…'
+                : 'Signing in…'
+              : signingUp
+                ? 'Create account'
+                : 'Sign in'}
           </button>
 
           <div style={{ textAlign: 'center', marginTop: 18 }}>
             <div style={{ font: `400 12.5px ${fonts.sans}`, color: colors.muted, marginBottom: 6 }}>
-              First time here, or no password yet?
+              {signingUp ? 'Already have an account?' : 'First time here?'}
             </div>
             <button
               type="button"
-              onClick={() => mail('link')}
-              disabled={noMail}
-              style={{
-                font: `600 13px ${fonts.sans}`,
-                color: colors.accent,
-                opacity: noMail ? 0.6 : 1,
-                cursor: noMail ? 'default' : 'pointer',
-              }}
+              onClick={() => switchMode(signingUp ? 'in' : 'up')}
+              style={{ font: `600 13px ${fonts.sans}`, color: colors.accent }}
             >
-              {/* The countdown is the whole point: a disabled button with no
-                  reason on it is the thing that gets clicked ten more times. */}
-              {cooling ? `Another link in ${waitLabel(coolLeft)}` : 'Email me a sign-in link'}
+              {signingUp ? 'Sign in instead' : 'Create an account'}
             </button>
+
+            {/* The link is still the answer for a device you've never signed in
+                on, and for the accounts made back when it was the only way in.
+                It costs an email, though, so it no longer leads. */}
+            {!signingUp && (
+              <div style={{ marginTop: 14 }}>
+                <button
+                  type="button"
+                  onClick={() => mail('link')}
+                  disabled={noMail}
+                  style={{
+                    font: `600 12px ${fonts.sans}`,
+                    color: colors.muted2,
+                    opacity: noMail ? 0.6 : 1,
+                    cursor: noMail ? 'default' : 'pointer',
+                  }}
+                >
+                  {/* The countdown is the whole point: a disabled button with no
+                      reason on it is the thing that gets clicked ten more times. */}
+                  {cooling ? `Another link in ${waitLabel(coolLeft)}` : 'Email me a sign-in link'}
+                </button>
+              </div>
+            )}
           </div>
         </form>
       )}

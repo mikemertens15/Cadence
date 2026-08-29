@@ -122,6 +122,27 @@ export function AuthProvider({ children }) {
     if (error) throw error;
   }, []);
 
+  // Sign-up with no inbox round-trip. With "Confirm email" off in the project's
+  // auth settings, Supabase creates the account and hands back a session in the
+  // same response: the person is signed in before they've looked away from the
+  // screen, and no mail is sent at all. That's the whole point — an emailed
+  // link is a place for a new user to get lost, and the allowance it spends is
+  // the scarcest thing this project has.
+  //
+  // With confirmations still on, the identical call returns a user and a null
+  // session and sends a confirmation instead. Reporting which of the two
+  // happened lets the screen say the right thing under either setting, so this
+  // works before the toggle is flipped as well as after.
+  const signUpWithPassword = useCallback(async (email, password) => {
+    const { data, error } = await supabase.auth.signUp({
+      email: (email || '').trim(),
+      password,
+      options: { emailRedirectTo: SITE_URL },
+    });
+    if (error) throw error;
+    return { needsConfirmation: !data.session };
+  }, []);
+
   const signInWithPassword = useCallback(async (email, password) => {
     const { error } = await supabase.auth.signInWithPassword({
       email: (email || '').trim(),
@@ -162,6 +183,7 @@ export function AuthProvider({ children }) {
     linkError,
     signInWithMagicLink,
     signInWithPassword,
+    signUpWithPassword,
     sendPasswordReset,
     setPassword,
     endRecovery,

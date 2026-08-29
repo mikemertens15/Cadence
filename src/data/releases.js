@@ -8,6 +8,21 @@
 
 export const RELEASES = [
   {
+    version: '1.3.0',
+    date: '2026-08-29',
+    name: 'Just come in',
+    notes: [
+      [
+        'added',
+        'Sign up with an email and a password, and you are in — no link to go and find, no inbox to switch to, no waiting. Making an account is now the first thing this screen offers rather than something you arrive at by asking for a link and hoping one turns up. The link still exists for a device you have never signed in on, and for the accounts made back when it was the only way in; it has just stopped being the front door, because the front door should not depend on the slowest and least reliable part of the whole arrangement.',
+      ],
+      [
+        'changed',
+        'Trying to sign up on an address that already has an account now says so, and points at signing in. It used to be indistinguishable from success — you would be told to check an inbox that was never going to receive anything, because the account you were creating had been there all along.',
+      ],
+    ],
+  },
+  {
     version: '1.2.2',
     date: '2026-08-29',
     name: 'One link at a time',
