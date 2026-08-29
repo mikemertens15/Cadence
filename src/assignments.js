@@ -9,6 +9,8 @@
 // Everything else is the same for both, which is why this is one column on
 // assignments rather than a second table.
 
+import { dowIndex, toMinutes } from './dates.js';
+
 export const KINDS = [
   // key, label, short, event?
   ['assignment', 'Assignment', 'HW', false],
@@ -46,6 +48,68 @@ export const eventMinutes = (a) => {
 // The verb for the date field. "Due" on a final exam is the kind of small wrong
 // word that makes an app feel like it was built for something else.
 export const dateVerb = (kind) => (isEvent(kind) ? 'When' : 'Due');
+
+// ------------------------------------------- exams that happen in class
+//
+// Most of them do. A dynamics exam is the dynamics class doing something
+// different on a Tuesday — same room, same hour, same fifty minutes — and being
+// asked to type that hour in is being asked for a fact the app has had since the
+// course was entered. So `at_class_time` says "whenever this meets that day" and
+// the time is read back off the timetable rather than off the row.
+//
+// The stored `due_at` still carries the right instant (SemesterProvider
+// re-stamps it whenever the meeting moves), so everything that sorts by it or
+// counts days to it is untouched. These two are for the places that draw the
+// thing: the schedule needs to know which block it belongs *inside*.
+
+/**
+ * The meeting an event sits in, or null when the class doesn't meet that day.
+ *
+ * Nearest start rather than first, for a course with a lecture in the morning
+ * and a lab in the afternoon: nudging the hour is then how you say which of the
+ * two the midterm is in, instead of the app always picking the earlier one and
+ * offering no way to disagree.
+ */
+export function meetingFor(dueAt, meetings = []) {
+  if (!dueAt) return null;
+  const at = new Date(dueAt);
+  if (Number.isNaN(at.getTime())) return null;
+
+  const sameDay = meetings.filter((m) => m.day_of_week === dowIndex(at));
+  if (!sameDay.length) return null;
+
+  const want = at.getHours() * 60 + at.getMinutes();
+  return sameDay.reduce((best, m) =>
+    Math.abs(toMinutes(m.start_time) - want) < Math.abs(toMinutes(best.start_time) - want) ? m : best,
+  );
+}
+
+/**
+ * When an event happens, as minutes since midnight, and what it is attached to.
+ *
+ * Falls back to the row's own time whenever there is no meeting to read — a
+ * common final in a different building at 8am on a Saturday is a real thing and
+ * the flag is simply false for it, but so is an exam marked as in-class on a day
+ * the class was moved off. Falling back beats drawing nothing.
+ */
+export function eventSlot(a, meetings = []) {
+  const meeting = a?.at_class_time ? meetingFor(a.due_at, meetings) : null;
+  if (meeting) {
+    return { start: toMinutes(meeting.start_time), end: toMinutes(meeting.end_time), meeting };
+  }
+
+  const at = a?.due_at ? new Date(a.due_at) : null;
+  const start = at && !Number.isNaN(at.getTime()) ? at.getHours() * 60 + at.getMinutes() : 0;
+  return { start, end: start + eventMinutes(a), meeting: null };
+}
+
+/** Does this course meet on the weekday of the given local date string? */
+export const meetsOn = (meetings = [], day) => {
+  const d = day ? new Date(`${day}T12:00`) : null;
+  if (!d || Number.isNaN(d.getTime())) return null;
+  const rows = meetings.filter((m) => m.day_of_week === dowIndex(d));
+  return rows.length ? rows.sort((a, b) => toMinutes(a.start_time) - toMinutes(b.start_time)) : null;
+};
 
 // ------------------------------------------------- which bucket work lands in
 //

@@ -22,7 +22,7 @@ import {
 } from '../components/ui';
 import { PrimaryButton, GhostButton, Chip, inputStyle } from '../components/Modal';
 import { DegreeProgress } from '../components/DegreeProgress';
-import { ScoreInput } from '../components/AssignmentModal';
+import { ScoreInput, PresentSwitch } from '../components/AssignmentModal';
 
 // Where the app earns its keep. The list answers "how am I doing"; the detail
 // answers the two questions that actually change behaviour — "what happens if
@@ -32,6 +32,7 @@ export function GradesView({ onOpenCourse, onAddCourse, onOpenDegree, navigate }
   const termGrades = useTermGrades();
   const gpa = useGpa();
   const phone = useIsPhone();
+  const { features } = useSemester();
 
   if (!termGrades.length) {
     return (
@@ -97,15 +98,17 @@ export function GradesView({ onOpenCourse, onAddCourse, onOpenDegree, navigate }
         ))}
       </div>
 
-      <GpaPanel gpa={gpa} phone={phone} />
+      <GpaPanel gpa={gpa} phone={phone} degree={features.degree} />
 
       <div style={{ marginTop: 26 }}>
         <TermTarget phone={phone} navigate={navigate} />
       </div>
 
-      <div style={{ marginTop: 26 }}>
-        <DegreeProgress onSetUp={onOpenDegree} />
-      </div>
+      {features.degree && (
+        <div style={{ marginTop: 26 }}>
+          <DegreeProgress onSetUp={onOpenDegree} />
+        </div>
+      )}
 
       <div style={{ marginTop: 18 }}>
         <GhostButton onClick={onOpenCourse}>Manage courses</GhostButton>
@@ -114,7 +117,14 @@ export function GradesView({ onOpenCourse, onAddCourse, onOpenDegree, navigate }
   );
 }
 
-function GpaPanel({ gpa, phone }) {
+// Two tiles, or one.
+//
+// Cumulative is a claim about every semester you have taken, and the rows that
+// make it true — the ones from before this app — live behind the degree switch.
+// With that switch off there is nothing for it to be cumulative *over*, so it
+// would be this term's number printed twice under two different words, which is
+// worse than not printing it.
+function GpaPanel({ gpa, phone, degree = true }) {
   const tile = (label, value, note) => (
     <Card style={{ padding: '16px 18px' }}>
       <div style={{ font: `600 11px ${fonts.sans}`, color: colors.muted, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
@@ -133,37 +143,48 @@ function GpaPanel({ gpa, phone }) {
   return (
     <>
       <SectionHeading>GPA</SectionHeading>
-      <div style={{ display: 'grid', gridTemplateColumns: phone ? '1fr 1fr' : 'repeat(2, minmax(0, 220px))', gap: 10 }}>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: !degree
+            ? 'minmax(0, 220px)'
+            : phone
+              ? '1fr 1fr'
+              : 'repeat(2, minmax(0, 220px))',
+          gap: 10,
+        }}
+      >
         {tile(
           'This term',
           gpa.term,
           gpa.term.credits ? `${fmtCredits(gpa.term.credits)} credits counted` : 'No graded work yet',
         )}
-        {tile(
-          'Cumulative',
-          gpa.cumulative,
-          gpa.cumulative.priorCredits
-            ? `${fmtCredits(gpa.cumulative.credits)} credits, ${fmtCredits(gpa.cumulative.priorCredits)} from before`
-            : gpa.cumulative.credits
-              ? `${fmtCredits(gpa.cumulative.credits)} credits counted`
-              : 'Across every term',
-        )}
+        {degree &&
+          tile(
+            'Cumulative',
+            gpa.cumulative,
+            gpa.cumulative.priorCredits
+              ? `${fmtCredits(gpa.cumulative.credits)} credits, ${fmtCredits(gpa.cumulative.priorCredits)} from before`
+              : gpa.cumulative.credits
+                ? `${fmtCredits(gpa.cumulative.credits)} credits counted`
+                : 'Across every term',
+          )}
       </div>
       {/* A GPA computed from courses that aren't finished is a projection, and
           saying so is the difference between a useful number and a wrong one. */}
       <div style={{ font: `400 11.5px/1.5 ${fonts.sans}`, color: colors.faint, marginTop: 9 }}>
         Based on where each course stands right now, on a straight 4.0 scale.
-        {gpa.cumulative.ungraded > 0 &&
+        {degree && gpa.cumulative.ungraded > 0 &&
           ` ${gpa.cumulative.ungraded} course${gpa.cumulative.ungraded === 1 ? '' : 's'} with no graded work yet ${gpa.cumulative.ungraded === 1 ? 'is' : 'are'} left out.`}
         {/* Said separately from the ungraded count on purpose: one is waiting
             for a number and the other is never getting one. */}
-        {gpa.cumulative.excluded > 0 &&
+        {degree && gpa.cumulative.excluded > 0 &&
           ` ${gpa.cumulative.excluded} pass/fail, audited or withdrawn ${gpa.cumulative.excluded === 1 ? 'course carries' : 'courses carry'} no grade points at all.`}
       </div>
       {/* Until history is in, "cumulative" is a word this app has not earned —
           it means one semester, and for anyone past their first that is a
           number they would not recognise as theirs. */}
-      {!gpa.hasHistory && (
+      {degree && !gpa.hasHistory && (
         <div style={{ font: `400 11.5px/1.5 ${fonts.sans}`, color: colors.faint, marginTop: 5 }}>
           Cumulative only covers terms tracked here. Add the semesters that came before it under
           Settings &rarr; Degree and it becomes your real one.
@@ -369,15 +390,28 @@ function Breakdown({ grade, color, phone }) {
               </div>
               <div style={{ font: `400 11.5px ${fonts.sans}`, color: colors.faint, marginTop: 3 }}>
                 {cat.gradedCount === 0
-                  ? cat.remainingCount > 0
-                    ? `${cat.remainingCount} coming · not counted yet`
+                  ? cat.remainingCount + cat.unenteredCount > 0
+                    ? `${cat.remainingCount + cat.unenteredCount} coming · not counted yet`
                     : 'Nothing here yet'
                   : `${fmtPoints(cat.earned)} / ${fmtPoints(cat.possible)} pts` +
-                    (cat.droppedKeys.length
-                      ? ` · ${cat.droppedKeys.length} dropped`
-                      : '') +
-                    (cat.remainingCount > 0 ? ` · ${cat.remainingCount} left` : '')}
+                    (cat.droppedKeys.length ? ` · ${cat.droppedKeys.length} dropped` : '') +
+                    (cat.remainingCount > 0 ? ` · ${cat.remainingCount} left` : '') +
+                    (cat.unenteredCount > 0 ? ` · ${cat.unenteredCount} not entered` : '')}
               </div>
+
+              {/* A drop the syllabus grants that hasn't been spent yet. Said out
+                  loud because it is the one thing that makes this category read
+                  lower than a student expects — and "where did my dropped quiz
+                  go" is a much worse question than the sentence that answers it
+                  before it gets asked. */}
+              {cat.dropsHeld > 0 && cat.gradedCount > 0 && (
+                <div style={{ font: `400 11.5px/1.45 ${fonts.sans}`, color: colors.faint, marginTop: 3 }}>
+                  <span className="cad-nums">
+                    {cat.droppedKeys.length} of {cat.dropLowestN}
+                  </span>{' '}
+                  drops applied so far &mdash; the rest land as the category fills in.
+                </div>
+              )}
               {cat.pct != null && (
                 <div style={{ marginTop: 8, maxWidth: 220 }}>
                   <ProgressBar pct={cat.pct} fill={color.solid} height={5} />
@@ -419,12 +453,22 @@ function Solver({ solved, target, setTarget, scale, phone }) {
           body: `Even a zero on everything left holds ${fmtPct(solved.floor)}. This one is banked.`,
           tone: tone.green,
         };
-      case 'reachable':
+      case 'reachable': {
+        // Two numbers, because they are two different kinds of left. Rows you
+        // have entered and not scored are work you can see; rows the syllabus
+        // promises and nobody has typed in are work you can't — and the average
+        // below is over both, so both have to be said.
+        const left = solved.remainingCount + solved.unenteredCount;
         return {
           headline: `${fmtPct(solved.needed)} average`,
-          body: `on the ${solved.remainingCount} assignment${solved.remainingCount === 1 ? '' : 's'} left (${fmtPoints(solved.remainingPossible)} points).`,
+          body:
+            `on the ${left} piece${left === 1 ? '' : 's'} of work left` +
+            (solved.unenteredCount > 0
+              ? ` — ${solved.remainingCount} entered, ${solved.unenteredCount} still to come.`
+              : ` (${fmtPoints(solved.remainingPossible)} points).`),
           tone: colors.ink,
         };
+      }
       case 'stretch':
         return {
           headline: `${fmtPct(solved.needed)} average`,
@@ -486,9 +530,23 @@ function Solver({ solved, target, setTarget, scale, phone }) {
           {m.body}
         </div>
 
+        {/* What every number above is standing on.
+            A category that never said how many items it would have is a
+            category the forecast has to assume is finished, and assuming that
+            silently is how an app tells you a term is settled in week nine. It
+            is not a warning — "homework, however many he sets" is most syllabi —
+            so it is said once, quietly, where the number it qualifies is. */}
+        {solved.unstated.length > 0 && solved.status !== 'no-remaining' && (
+          <div style={{ font: `400 11.5px/1.55 ${fonts.sans}`, color: colors.faint, marginTop: 10 }}>
+            Assumes what&rsquo;s entered is all of it for{' '}
+            {solved.unstated.map((c) => c.name).join(', ')}. If you know how many there&rsquo;ll be,
+            say so in the course and this gets sharper.
+          </div>
+        )}
+
         {/* The two ends of the range. Between them is every grade still
             available to you, which is usually the thing worth knowing. */}
-        {solved.remainingCount > 0 && (
+        {solved.remainingCount + solved.unenteredCount > 0 && (
           <div
             style={{
               display: 'flex',
@@ -583,12 +641,13 @@ function Assignments({ grade, whatIf, setWhatIf, clearWhatIf, simulating, onScor
                 }}
               >
                 {cat.name}
-                {cat.dropLowestN > 0 && (
-                  <span style={{ textTransform: 'none', letterSpacing: 0, color: colors.faint, fontWeight: 500 }}>
-                    {' '}
-                    · drops {cat.dropLowestN} lowest
-                  </span>
-                )}
+                <span style={{ textTransform: 'none', letterSpacing: 0, color: colors.faint, fontWeight: 500 }}>
+                  {cat.creditBasis === 'completion' ? ' · present or missed' : ''}
+                  {cat.dropLowestN > 0 ? ` · drops ${cat.dropLowestN} lowest` : ''}
+                  {cat.unenteredCount > 0
+                    ? ` · ${cat.unenteredCount} more expected`
+                    : ''}
+                </span>
               </div>
 
               {rows.map((a, i) => (
@@ -597,6 +656,7 @@ function Assignments({ grade, whatIf, setWhatIf, clearWhatIf, simulating, onScor
                   assignment={a}
                   first={i === 0}
                   dropped={dropped.has(a.id)}
+                  completion={cat.creditBasis === 'completion'}
                   whatIf={whatIf[a.id] ?? ''}
                   setWhatIf={setWhatIf}
                   onScore={onScore}
@@ -805,7 +865,17 @@ function TargetRow({ row, navigate }) {
   );
 }
 
-function AssignmentScoreRow({ assignment: a, first, dropped, whatIf, setWhatIf, onScore, onOpen, phone }) {
+function AssignmentScoreRow({
+  assignment: a,
+  first,
+  dropped,
+  completion,
+  whatIf,
+  setWhatIf,
+  onScore,
+  onOpen,
+  phone,
+}) {
   const graded = isGraded(a);
   const possible = Number(a.points_possible) || 0;
   // Graded work borrows the event dialect, which never says "late". Once a
@@ -846,7 +916,14 @@ function AssignmentScoreRow({ assignment: a, first, dropped, whatIf, setWhatIf, 
         </div>
       </button>
 
-      {graded ? (
+      {completion ? (
+        <PresentSwitch
+          assignment={a}
+          graded={graded}
+          possible={possible}
+          onScore={onScore}
+        />
+      ) : graded ? (
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, flexShrink: 0 }}>
           <ScoreInput assignment={a} onCommit={(v) => onScore(a.id, v)} width={phone ? 52 : 58} />
           <span className="cad-nums" style={{ font: `500 11.5px ${fonts.sans}`, color: colors.faint }}>
@@ -883,3 +960,4 @@ function AssignmentScoreRow({ assignment: a, first, dropped, whatIf, setWhatIf, 
     </div>
   );
 }
+

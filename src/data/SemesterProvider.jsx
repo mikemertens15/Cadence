@@ -1,7 +1,9 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../auth/AuthProvider';
-import { dayStr } from '../dates';
+import { dayStr, toLocalInput, fromLocalInput, dayPart } from '../dates';
+import { meetingFor } from '../assignments';
+import { resolveFeatures, channelOf, inChannel } from '../features';
 import { openPauseMs, focusMinutes, MIN_LOGGED_MINUTES } from '../study';
 
 // One provider for the whole dataset, which is a deliberate departure from
@@ -15,7 +17,7 @@ import { openPauseMs, focusMinutes, MIN_LOGGED_MINUTES } from '../study';
 // took before this app existed — so "load only the active term" buys nothing.
 //
 // The dataset is small enough to make that easy: six courses a term, a few
-// hundred assignments a year. It all arrives in ten queries on sign-in.
+// hundred assignments a year. It all arrives in one round of queries on sign-in.
 //
 // Rows travel in database shape (`points_possible`, not `pointsPossible`). The
 // grading engine reads them directly, and a translation layer in between would
@@ -24,6 +26,20 @@ import { openPauseMs, focusMinutes, MIN_LOGGED_MINUTES } from '../study';
 const SemesterContext = createContext(null);
 
 const TERM_KEY = 'cadence.term';
+
+// key, table, and whether the app is worth showing without it.
+//
+// Everything here was essential until 1.4, and one of them now isn't. Settings
+// have a defined answer when they're missing — the defaults — and a deploy that
+// lands a minute before its migration would otherwise take down an app that can
+// draw every screen it has. That minute is not hypothetical: the bundle goes out
+// when it builds and the migration goes out when a person runs it, and they are
+// not the same event.
+//
+// It is deliberately a short list. A failed read of `assignments` is not a
+// semester with no work in it, and quietly rendering one is the mistake this
+// provider already spends a paragraph avoiding elsewhere.
+const OPTIONAL = new Set(['prefs']);
 
 const TABLES = [
   ['terms', 'terms'],
@@ -37,6 +53,7 @@ const TABLES = [
   ['breaks', 'term_breaks'],
   ['creditApplications', 'credit_applications'],
   ['studySessions', 'study_sessions'],
+  ['prefs', 'user_prefs'],
 ];
 
 const EMPTY = {
@@ -51,6 +68,7 @@ const EMPTY = {
   breaks: [],
   creditApplications: [],
   studySessions: [],
+  prefs: [],
 };
 
 export function useSemester() {
@@ -65,6 +83,24 @@ export function useSemester() {
 const newId = () =>
   globalThis.crypto?.randomUUID?.() ??
   `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+// One shape for a category, so the insert that comes with a new course and the
+// update that edits an existing one cannot disagree about what a category is.
+// Module scope because it reads nothing but its arguments, and because the two
+// callbacks that use it are built before the point a const inside the component
+// would have been initialised.
+//
+// `expected_count` is null rather than 0 for "the syllabus didn't say": zero
+// would be a claim that there are none of them, and the column's check
+// constraint rejects it precisely so the two can't be confused.
+const categoryRow = (c, i) => ({
+  name: c.name.trim(),
+  weight_pct: c.weight,
+  drop_lowest_n: Number(c.drop) || 0,
+  expected_count: Number(c.expected) > 0 ? Math.floor(Number(c.expected)) : null,
+  credit_basis: c.basis === 'completion' ? 'completion' : 'score',
+  position: i,
+});
 
 const groupBy = (rows, key) => {
   const map = new Map();
@@ -142,7 +178,7 @@ export function SemesterProvider({ children }) {
       return;
     }
 
-    const failed = results.find((r) => r.error);
+    const failed = results.find((r, i) => r.error && !OPTIONAL.has(TABLES[i][0]));
     if (failed) {
       // Deliberately does *not* clear `rows`. A failed refresh on a phone coming
       // out of a pocket is the common case, and blanking the dataset would turn
@@ -155,6 +191,8 @@ export function SemesterProvider({ children }) {
     }
 
     setError('');
+    // An optional table that didn't answer reads as "no rows", which for
+    // preferences is the same thing as "you haven't set any".
     setRows(Object.fromEntries(TABLES.map(([key], i) => [key, results[i].data ?? []])));
     setLoaded(true);
     everLoaded.current = true;
@@ -396,6 +434,39 @@ export function SemesterProvider({ children }) {
     [rows.studySessions],
   );
 
+  /**
+   * Which parts of the app are switched on, and whether unreleased work is in
+   * it.
+   *
+   * At most one row, and usually none: a preference nobody has ever set is the
+   * defaults, which is why there is no write on first load. Everything resolves
+   * against src/features.js rather than against whatever the row happens to
+   * hold, so a feature added after a row was written is on, and a feature
+   * removed leaves a key nobody reads.
+   */
+  const prefsRow = rows.prefs[0] ?? null;
+  // `releaseChannel` rather than `channel`: the realtime subscription below owns
+  // that word already, and two different things called the same thing in one
+  // file is how a rename goes wrong six months from now.
+  const releaseChannel = channelOf(prefsRow?.channel);
+
+  /**
+   * One object answering both "do I want this" and "does this exist yet".
+   *
+   * Deliberately merged. A component asking whether to draw the study card has
+   * no business knowing whether the answer is a preference or a release
+   * decision — and if it did, the two would drift the first time one of them
+   * changed.
+   */
+  const features = useMemo(() => {
+    const on = resolveFeatures(prefsRow?.features);
+    return {
+      ...on,
+      beta: releaseChannel === 'beta',
+      has: (key) => inChannel(key, releaseChannel),
+    };
+  }, [prefsRow?.features, releaseChannel]);
+
   // ------------------------------------------------------------- mutators
 
   // Every write goes through here: run it, refetch on success, surface the
@@ -497,15 +568,9 @@ export function SemesterProvider({ children }) {
         );
       }
       if (cats.length) {
-        await supabase.from('grading_categories').insert(
-          cats.map((c, i) => ({
-            course_id: course.id,
-            name: c.name.trim(),
-            weight_pct: c.weight,
-            drop_lowest_n: c.drop ?? 0,
-            position: i,
-          })),
-        );
+        await supabase
+          .from('grading_categories')
+          .insert(cats.map((c, i) => ({ course_id: course.id, ...categoryRow(c, i) })));
       }
 
       // Which degree this counts toward, defaulted by the caller to whichever
@@ -541,25 +606,54 @@ export function SemesterProvider({ children }) {
     [run, dropLocal],
   );
 
-  // Meetings are replaced wholesale. They carry no references from anywhere
-  // else, so there's nothing a delete could orphan, and diffing seven rows
-  // would be more code than it saves.
+  /**
+   * Save when a course meets, and move the exams that meet with it.
+   *
+   * Meetings are replaced wholesale. They carry no references from anywhere
+   * else, so there's nothing a delete could orphan, and diffing seven rows
+   * would be more code than it saves.
+   *
+   * The second half is the part that isn't obvious. An exam marked as happening
+   * in class stores its instant in `due_at` like every other row, because that
+   * is what sorts a work list and counts the days to a midterm — so a class
+   * moving from 8am to 9am has to take its exams with it, or the app quietly
+   * keeps a Tuesday midterm at an hour the class no longer meets. Only the day
+   * is kept from the old timestamp; the hour comes back off the new timetable.
+   *
+   * A course that stops meeting on that weekday entirely leaves its exam where
+   * it was. The alternative is inventing a new day for a real appointment, and
+   * a wrong hour on the right day is a much smaller lie.
+   */
   const setMeetings = useCallback(
     async (courseId, mtgs) => {
       await supabase.from('meetings').delete().eq('course_id', courseId);
-      if (mtgs.length) {
-        await supabase.from('meetings').insert(
-          mtgs.map((m) => ({
-            course_id: courseId,
-            day_of_week: m.day,
-            start_time: m.start,
-            end_time: m.end,
-          })),
-        );
+
+      const rowsToInsert = mtgs.map((m) => ({
+        course_id: courseId,
+        day_of_week: m.day,
+        start_time: m.start,
+        end_time: m.end,
+      }));
+      if (rowsToInsert.length) await supabase.from('meetings').insert(rowsToInsert);
+
+      const pinned = (assignmentsByCourse.get(courseId) ?? []).filter(
+        (a) => a.at_class_time && a.due_at,
+      );
+      for (const a of pinned) {
+        const meeting = meetingFor(a.due_at, rowsToInsert.map((r) => ({
+          day_of_week: r.day_of_week,
+          start_time: r.start_time,
+        })));
+        if (!meeting) continue;
+        const moved = fromLocalInput(`${dayPart(toLocalInput(a.due_at))}T${meeting.start_time.slice(0, 5)}`);
+        if (moved && moved !== a.due_at) {
+          await supabase.from('assignments').update({ due_at: moved }).eq('id', a.id);
+        }
       }
+
       await fetchAll();
     },
-    [fetchAll],
+    [fetchAll, assignmentsByCourse],
   );
 
   /**
@@ -584,12 +678,7 @@ export function SemesterProvider({ children }) {
       }
 
       for (const [i, c] of cats.entries()) {
-        const payload = {
-          name: c.name.trim(),
-          weight_pct: c.weight,
-          drop_lowest_n: c.drop ?? 0,
-          position: i,
-        };
+        const payload = categoryRow(c, i);
         if (c.id) await supabase.from('grading_categories').update(payload).eq('id', c.id);
         else await supabase.from('grading_categories').insert({ course_id: courseId, ...payload });
       }
@@ -626,6 +715,7 @@ export function SemesterProvider({ children }) {
     kind,
     durationMin,
     countsTowardGrade,
+    atClassTime,
     seriesId,
   }) => ({
     course_id: courseId,
@@ -637,6 +727,7 @@ export function SemesterProvider({ children }) {
     kind: kind ?? 'assignment',
     duration_min: durationMin ?? null,
     counts_toward_grade: countsTowardGrade !== false,
+    at_class_time: atClassTime === true,
     series_id: seriesId ?? null,
   });
 
@@ -1023,6 +1114,48 @@ export function SemesterProvider({ children }) {
     [rows.studySessions, run, patchLocal, deleteStudySession],
   );
 
+  // --------------------------------------------------------------- prefs
+  //
+  // Upserted rather than updated: almost nobody has a row until the first time
+  // they turn something off, and "insert if this is your first opinion" is a
+  // thing Postgres does in one statement and a client does in three.
+  const savePrefs = useCallback(
+    (patch) =>
+      run(
+        supabase
+          .from('user_prefs')
+          .upsert(
+            { user_id: userId, ...patch, updated_at: new Date().toISOString() },
+            { onConflict: 'user_id' },
+          ),
+      ),
+    [run, userId],
+  );
+
+  /**
+   * Switch a part of the app on or off.
+   *
+   * The stored object only ever carries keys that disagree with the default, so
+   * a feature whose default changes later moves for everyone who never had an
+   * opinion about it — which is the whole reason defaults live in code.
+   */
+  const setFeature = useCallback(
+    (key, on) => {
+      const next = { ...(prefsRow?.features ?? {}), [key]: on };
+      return savePrefs({ features: next });
+    },
+    [savePrefs, prefsRow?.features],
+  );
+
+  // A whole set at once, for the presets. One write rather than four, so "just
+  // grades" doesn't flicker through three intermediate layouts on the way.
+  const setFeatures = useCallback(
+    (patch) => savePrefs({ features: { ...(prefsRow?.features ?? {}), ...patch } }),
+    [savePrefs, prefsRow?.features],
+  );
+
+  const setChannel = useCallback((next) => savePrefs({ channel: next }), [savePrefs]);
+
   const value = {
     loading,
     loaded,
@@ -1050,6 +1183,8 @@ export function SemesterProvider({ children }) {
     breakOn,
     studySessions,
     runningSession,
+    features,
+    releaseChannel,
     // The raw tables, for the one caller that wants exactly what is stored
     // rather than anything derived: the backup. Deliberately last and
     // deliberately named — everything else in here is shaped for a screen.
@@ -1085,6 +1220,9 @@ export function SemesterProvider({ children }) {
     resumeStudy,
     stopStudy,
     deleteStudySession,
+    setFeature,
+    setFeatures,
+    setChannel,
     refresh: fetchAll,
   };
 

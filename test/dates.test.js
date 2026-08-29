@@ -1,7 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { describeDue, dayRangeLabel, dayRangeLength, atTime, toLocalInput } from '../src/dates.js';
+import {
+  describeDue,
+  dayRangeLabel,
+  dayRangeLength,
+  atTime,
+  toLocalInput,
+  HOUR_OPTIONS,
+  END_OF_DAY,
+  isOffHour,
+  labelForTime,
+  withTime,
+  dayPart,
+  timePart,
+} from '../src/dates.js';
 
 // The one distinction worth testing here: something due *by* a moment versus
 // something that happens *at* one. Everything downstream reads `type` — which
@@ -76,4 +89,43 @@ test('an exam time is local wall time, not a UTC shift', () => {
   // exam as 4am (or the previous evening) west of Greenwich.
   assert.equal(toLocalInput(atTime('2026-10-14', 9, 0)), '2026-10-14T09:00');
   assert.equal(toLocalInput(atTime('2026-01-01', 14, 30)), '2026-01-01T14:30');
+});
+
+// ------------------------------------------------------------- hours, not times
+
+test('the hours offered are end-of-day and then every one of them', () => {
+  assert.equal(HOUR_OPTIONS[0].value, END_OF_DAY);
+  assert.equal(HOUR_OPTIONS.length, 25);
+  assert.deepEqual(
+    HOUR_OPTIONS.slice(1, 4).map((o) => o.label),
+    ['12 AM', '1 AM', '2 AM'],
+  );
+});
+
+test('end of day is 11:59pm and not midnight, which is a different day', () => {
+  // Work "due midnight Friday" filed at 00:00 is overdue for all of Friday.
+  assert.equal(END_OF_DAY, '23:59');
+});
+
+test('a time that is not on the hour is kept rather than snapped to one', () => {
+  assert.equal(isOffHour('11:30'), true);
+  assert.equal(isOffHour('09:00'), false);
+  assert.equal(isOffHour(END_OF_DAY), false);
+  assert.equal(isOffHour(''), false);
+  assert.equal(labelForTime('11:30'), '11:30 AM');
+});
+
+test('a day and an hour join and come apart again', () => {
+  assert.equal(withTime('2026-10-08', '09:00'), '2026-10-08T09:00');
+  assert.equal(withTime('2026-10-08', ''), `2026-10-08T${END_OF_DAY}`);
+  assert.equal(withTime('', '09:00'), '');
+  assert.equal(dayPart('2026-10-08T09:00'), '2026-10-08');
+  assert.equal(timePart('2026-10-08T09:00'), '09:00');
+  assert.equal(timePart(''), '');
+});
+
+test('a stored timestamp comes back as the two halves the form edits', () => {
+  const iso = atTime('2026-10-08', 14, 0);
+  assert.equal(dayPart(toLocalInput(iso)), '2026-10-08');
+  assert.equal(timePart(toLocalInput(iso)), '14:00');
 });

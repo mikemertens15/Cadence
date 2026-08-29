@@ -161,6 +161,47 @@ export function atTime(dayString, hour, minute = 0) {
   return d.toISOString();
 }
 
+/**
+ * The times a deadline is ever actually set to.
+ *
+ * No syllabus has ever said 11:47. It says midnight, or before class, or five
+ * o'clock — so the minute half of a time picker is a field that exists to be
+ * left alone, and on a phone it is two extra taps and a scroll wheel per
+ * assignment. An hour is the whole vocabulary, with end-of-day at the top of it
+ * because that is what most work is due at.
+ *
+ * 11:59pm rather than midnight for the default, and they are not the same
+ * moment: midnight on Friday is the *start* of Friday, so work "due midnight
+ * Friday" filed at 00:00 is overdue all day on the day it was set.
+ */
+export const END_OF_DAY = '23:59';
+
+export const HOUR_OPTIONS = [
+  { value: END_OF_DAY, label: 'End of day (11:59 PM)' },
+  ...Array.from({ length: 24 }, (_, h) => ({
+    value: `${String(h).padStart(2, '0')}:00`,
+    label: fmtMinutes(h * 60),
+  })),
+];
+
+// The 'HH:mm' half of a datetime-local value, and the 'YYYY-MM-DD' half.
+export const timePart = (local) => (local || '').split('T')[1] ?? '';
+export const dayPart = (local) => (local || '').split('T')[0] ?? '';
+
+// Put a wall-clock time onto a day, in the shape a datetime-local input wants.
+export const withTime = (day, time) => (day ? `${day}T${time || END_OF_DAY}` : '');
+
+// A time that isn't one of the offered hours — an 11:30 typed in before this
+// app only offered hours, or a class that starts at twenty past. Kept as its
+// own option rather than snapped, because silently moving a deadline someone
+// set is a worse failure than an odd-looking dropdown.
+export const isOffHour = (time) => Boolean(time) && !HOUR_OPTIONS.some((o) => o.value === time);
+
+export const labelForTime = (time) => {
+  const [h, m] = (time || '').split(':').map(Number);
+  return Number.isFinite(h) ? fmtMinutes(h * 60 + (m || 0), { padMinutes: true }) : '';
+};
+
 // How a piece of work's date reads in a list. Everything downstream — the
 // colour of the pill, which bucket it sorts into — is derived from this one
 // function, so a row can never show "Tomorrow" in an "Overdue" group.

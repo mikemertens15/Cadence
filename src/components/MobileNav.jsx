@@ -1,10 +1,13 @@
 import { colors, fonts, shadows } from '../theme';
-import { NAV_ITEMS, navSection } from '../nav';
+import { navItemsFor, navSection } from '../nav';
+import { useSemester } from '../data/SemesterProvider';
 
-// Phone chrome: a fixed tab bar with all five destinations, and a floating add
-// button above it. Five tabs fit without a "More" menu, which is the point —
-// nothing in an app this small deserves to be two taps deep.
+// Phone chrome: a fixed tab bar with every destination this account has, and a
+// floating add button above it. Five tabs fit without a "More" menu, which is
+// the point — nothing in an app this small deserves to be two taps deep. Four
+// fit better still, which is what someone who has turned the timetable off gets.
 export function MobileNav({ view, setView, onAdd }) {
+  const { features } = useSemester();
   const section = navSection(view);
 
   return (
@@ -48,7 +51,7 @@ export function MobileNav({ view, setView, onAdd }) {
           borderTop: `1px solid ${colors.divider}`,
         }}
       >
-        {NAV_ITEMS.map(([key, label, glyph]) => {
+        {navItemsFor(features).map(([key, label, glyph]) => {
           const active = section === key;
           return (
             <button

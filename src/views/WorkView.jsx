@@ -8,7 +8,7 @@ import { useNow } from '../useNow';
 import { isGraded } from '../grading/engine';
 import { Card, SectionHeading, EmptyState, DuePill, CourseDot, KindTag, fmtPoints } from '../components/ui';
 import { PrimaryButton, Chip } from '../components/Modal';
-import { ScoreInput } from '../components/AssignmentModal';
+import { ScoreInput, PresentSwitch } from '../components/AssignmentModal';
 
 // Everything due, across every course, in the order it's coming at you.
 //
@@ -30,7 +30,21 @@ const BUCKETS = [
 ];
 
 export function WorkView({ onOpen, onAdd }) {
-  const { assignments, courses, courseById, setScore, updateAssignment } = useSemester();
+  const { assignments, courses, courseById, categoriesByCourse, setScore, updateAssignment } =
+    useSemester();
+
+  // Which categories are graded on turning up, so a row in one gets the switch
+  // its professor is actually using rather than a box for a number nobody
+  // measured. Flattened to a set of ids once: the row has a category, and going
+  // from there back to a course and then to that course's category list would be
+  // two lookups per row for a fact that doesn't change while the list is open.
+  const completionCategories = useMemo(() => {
+    const ids = new Set();
+    for (const list of categoriesByCourse.values()) {
+      for (const c of list) if (c.credit_basis === 'completion') ids.add(c.id);
+    }
+    return ids;
+  }, [categoriesByCourse]);
   const phone = useIsPhone();
   const now = useNow();
 
@@ -164,6 +178,7 @@ export function WorkView({ onOpen, onAdd }) {
                     assignment={a}
                     due={due}
                     course={courseById.get(a.course_id)}
+                    completion={completionCategories.has(a.category_id)}
                     phone={phone}
                     onOpen={() => onOpen(a)}
                     onScore={(v) => setScore(a.id, { pointsEarned: v })}
@@ -183,7 +198,16 @@ export function WorkView({ onOpen, onAdd }) {
   );
 }
 
-function AssignmentRow({ assignment: a, due, course, phone, onOpen, onScore, onToggleStatus }) {
+function AssignmentRow({
+  assignment: a,
+  due,
+  course,
+  completion,
+  phone,
+  onOpen,
+  onScore,
+  onToggleStatus,
+}) {
   const graded = isGraded(a);
   const submitted = a.status === 'submitted';
   const event = isEvent(a.kind);
@@ -282,7 +306,14 @@ function AssignmentRow({ assignment: a, due, course, phone, onOpen, onScore, onT
       {/* Score entry lives on the row itself: logging one is the most frequent
           thing anyone does here, and making it a two-click trip through a modal
           would be the difference between doing it and not. */}
-      {a.points_possible > 0 && (
+      {completion ? (
+        <PresentSwitch
+          assignment={a}
+          graded={graded}
+          possible={Number(a.points_possible) || 0}
+          onScore={(_id, v) => onScore(v)}
+        />
+      ) : a.points_possible > 0 ? (
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, flexShrink: 0 }}>
           <ScoreInput assignment={a} onCommit={onScore} width={phone ? 50 : 60} />
           {/* The "/ 100" is reassurance about what the box means. On a phone the
@@ -296,7 +327,7 @@ function AssignmentRow({ assignment: a, due, course, phone, onOpen, onScore, onT
             </span>
           )}
         </div>
-      )}
+      ) : null}
 
       <DuePill due={due} done={graded} />
     </Card>

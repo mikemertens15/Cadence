@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { colors, fonts } from './theme';
 import { useHashRoute } from './useHashRoute';
+import { navAvailable, NAV_FALLBACK } from './nav';
 import { useIsPhone } from './useMediaQuery';
 import { useTheme } from './useTheme';
 import { useAuth } from './auth/AuthProvider';
@@ -53,13 +54,20 @@ export default function App() {
 function Shell() {
   const [route, navigate] = useHashRoute('today');
   const phone = useIsPhone();
-  const { courses, error } = useSemester();
+  const { courses, error, features } = useSemester();
 
   // One slot: only ever one dialog open, and opening another replaces it.
   const [modal, setModal] = useState(null);
   const close = () => setModal(null);
 
-  const [section, detail] = route.split('/');
+  // A route pointing at a switched-off part of the app falls back rather than
+  // rendering an empty screen. It arrives that way from the places the tab bar
+  // doesn't control — a bookmark, the back button, the hash still sitting in
+  // the address bar from before the switch was flipped. Resolved rather than
+  // redirected: a navigate() here would fire during render, and "today" drawn
+  // immediately beats "schedule" drawn for one frame and then replaced.
+  const shown = navAvailable(route, features) ? route : NAV_FALLBACK;
+  const [section, detail] = shown.split('/');
 
   // What "Add" means depends on where you are and what exists. With no courses
   // yet there's only one sensible thing to create, and on the Courses tab the
@@ -75,7 +83,7 @@ function Shell() {
     <div style={{ minHeight: '100vh', background: colors.bg }}>
       {!phone && (
         <TopNav
-          view={route}
+          view={shown}
           setView={navigate}
           onAdd={add}
           onOpenSettings={() => setModal({ kind: 'settings', startOn: 'terms' })}
@@ -202,7 +210,7 @@ function Shell() {
         )}
       </main>
 
-      {phone && <MobileNav view={route} setView={navigate} onAdd={add} />}
+      {phone && <MobileNav view={shown} setView={navigate} onAdd={add} />}
 
       {modal?.kind === 'course' && (
         <CourseModal course={modal.course} onClose={close} phone={phone} />

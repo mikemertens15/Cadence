@@ -20,7 +20,18 @@ import { DEFAULT_SCALE, letterFor, gradePoints } from './scale.js';
 //      overall grade, and their weights re-normalize to fill the gap. In week
 //      two, "92% on homework" means your grade is 92% — not 18.4% of a
 //      semester you haven't taken yet.
-//   3. Drop-lowest is applied to whatever is actually graded right now.
+//   3. Drop-lowest is applied only once it cannot land anywhere else. A drop is
+//      a rule about the finished category, and spending it on the worst of the
+//      three quizzes you have written so far is spending it on a guess — see
+//      applyDrops.
+//
+// Two things a syllabus states that the first three rules can't hold on their
+// own live on the category: `expected_count` ("seven quizzes, lowest two
+// dropped") and `credit_basis` ("thirty percent for turning up"). Neither can
+// move the grade you already have. The first decides which drops are yours yet
+// and how much of the term a forecast is allowed to ignore; the second is a
+// fact about how a bucket is scored that the UI reads to offer a switch instead
+// of a number field.
 
 // ---------------------------------------------------------------- primitives
 
@@ -43,9 +54,20 @@ const sum = (xs, f) => xs.reduce((t, x) => t + f(x), 0);
 // Zero-point rows are treated as ungradeable rather than graded-at-0: they can't
 // move a points-based average in either direction, and counting one as "graded"
 // would switch a whole category on with no evidence behind it.
+//
+// With one exception, and it is the only shape extra credit has: a row worth
+// nothing that you nonetheless scored on. "Five bonus points on the midterm" is
+// exactly zero possible and five earned, and the arithmetic a professor does
+// with it is to add the five to the top of the fraction and nothing to the
+// bottom. So it counts, it is marked `extra`, and — see applyDrops — it is
+// never a candidate for being dropped, because dropping your extra credit is
+// not a thing any syllabus means.
 function scoreOf(a, override) {
   const possible = num(a.points_possible) ?? 0;
-  if (!(possible > 0)) return null;
+  if (!(possible > 0)) {
+    const bonus = num(a.points_earned);
+    return bonus != null && bonus > 0 ? { earned: bonus, possible: 0, extra: true } : null;
+  }
 
   if (override != null) return { earned: (override / 100) * possible, possible };
 
@@ -60,42 +82,113 @@ function scoreOf(a, override) {
 
 export const isGraded = (a, overrides = {}) => scoreOf(a, num(overrides[a.id])) != null;
 
-// Drop the N lowest scores in a category, by percentage.
-//
-// Two decisions worth naming. Dropping by *percentage* rather than by raw points
-// is what a student expects — "my worst quiz" means the one you did worst on,
-// not the one that happened to be out of fewer points. And at least one score
-// always survives: a syllabus that says "drop your lowest two" alongside only
-// two graded quizzes would otherwise blank the category out of your grade
-// entirely, so your average would lurch the moment a third quiz landed. Keeping
-// one is stable, explicable, and converges on the true rule once the term fills
-// in — by finals, N is always smaller than the number of items anyway.
-function applyDrops(items, dropLowestN) {
-  const n = num(dropLowestN) ?? 0;
-  if (!(n > 0) || items.length <= 1) return { kept: items, dropped: [] };
+/**
+ * Drop the N lowest scores in a category — but only the drops that are already
+ * yours.
+ *
+ * Dropping by *percentage* rather than by raw points is what a student expects:
+ * "my worst quiz" means the one you did worst on, not the one that happened to
+ * be out of fewer points.
+ *
+ * The harder question is *when*. "Drop your lowest two" against two graded
+ * quizzes used to keep your better one and call that the category — a 60 and a
+ * 90 reading as 90 in week three. That is a rule about the finished category
+ * being spent on a guess, and it flatters in the one place this app cannot
+ * afford to.
+ *
+ * `toCome` is how many scores this category is still owed — quizzes entered but
+ * not yet marked, plus the ones the syllabus says are coming that nobody has
+ * written down. Each of those can absorb a drop, so the drops that must land on
+ * what you already have is `n - toCome`, and that is all this applies. Seven
+ * quizzes with the lowest two dropped: at three graded it drops none, at six it
+ * drops one, at seven it drops both. Nothing is lost in the meantime — the drops
+ * arrive exactly as they stop being able to go anywhere else, and `held` says
+ * how many are waiting so a grade that looks low can be explained rather than
+ * argued with.
+ *
+ * The floor of one surviving score stays, for the case with no counts at all:
+ * a category blanked out of the grade entirely would make the average lurch the
+ * moment the next score landed.
+ */
+function applyDrops(items, dropLowestN, { toCome = 0 } = {}) {
+  const n = Math.floor(num(dropLowestN) ?? 0);
+  if (!(n > 0)) return { kept: items, dropped: [], held: 0 };
 
-  const count = Math.min(Math.floor(n), items.length - 1);
-  const ranked = [...items].sort((a, b) => {
+  // `held` is always the drops the syllabus grants minus the ones actually
+  // taken, computed at every exit rather than accumulated — there are two
+  // different reasons a drop waits (a score still to come could take it, or
+  // taking it would empty the category), and a count that only knew about one
+  // of them would read zero in the other case.
+  const usable = Math.max(0, n - Math.max(0, toCome));
+  if (!usable || items.length <= 1) return { kept: items, dropped: [], held: n };
+
+  const count = Math.min(usable, items.length - 1);
+  // Extra credit is not a score you did badly on; it is points with no
+  // denominator, and ranking it by earned/possible would put it at infinity or
+  // — for a zero — at the bottom of a list it has no business being in at all.
+  const rankable = items.filter((i) => !i.extra);
+  const ranked = [...rankable].sort((a, b) => {
     const d = a.earned / a.possible - b.earned / b.possible;
     // Stable tiebreak, so two identical scores don't swap which one is shown as
     // dropped every time the list re-renders.
     return d !== 0 ? d : String(a.key).localeCompare(String(b.key));
   });
 
-  const dropped = ranked.slice(0, count);
+  const dropped = ranked.slice(0, Math.min(count, Math.max(0, rankable.length - 1)));
   const droppedKeys = new Set(dropped.map((d) => d.key));
-  return { kept: items.filter((i) => !droppedKeys.has(i.key)), dropped };
+  return {
+    kept: items.filter((i) => !droppedKeys.has(i.key)),
+    dropped,
+    held: n - dropped.length,
+  };
+}
+
+/**
+ * How many scores a category is still owed.
+ *
+ * Two sources, and the bigger one wins rather than the sum: rows entered but
+ * not yet marked are already counted in `entered`, so a category expecting
+ * seven with all seven typed in is owed seven-minus-graded either way, and one
+ * expecting seven with only two typed in is still owed five.
+ */
+function stillToCome(category, { graded = 0, entered = 0 } = {}) {
+  const expected = num(category?.expected_count);
+  const fromSyllabus = expected != null && expected > 0 ? Math.floor(expected) - graded : 0;
+  return Math.max(0, fromSyllabus, entered - graded);
+}
+
+// What a not-yet-existing item in this category is probably worth. The mode
+// rather than the mean, for the same reason suggestPoints() uses it: one
+// 200-point makeup exam shouldn't redefine what an exam is worth. 100 is the
+// fallback for a category with nothing in it at all, where the number cancels
+// out anyway — every projected item is the same size as every other.
+function typicalPossible(items) {
+  const counts = new Map();
+  for (const i of items) {
+    const v = i.possible;
+    if (!(v > 0)) continue;
+    counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+  if (!counts.size) return 100;
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
 }
 
 // The weighted roll-up shared by the live grade and every projection.
-function summarize(categories, itemsByCat) {
+//
+// `enteredByCat` is how many rows exist in each category at all, graded or not.
+// It only ever reaches applyDrops, which needs to know whether a drop still has
+// somewhere else to go; the average itself is over graded work exactly as it
+// always was.
+function summarize(categories, itemsByCat, enteredByCat = null) {
   let weightedSum = 0;
   let countedWeight = 0;
 
   const cats = categories.map((c) => {
     const weight = num(c.weight_pct) ?? 0;
     const items = itemsByCat.get(c.id) ?? [];
-    const { kept, dropped } = applyDrops(items, c.drop_lowest_n);
+    const entered = enteredByCat?.get(c.id) ?? items.length;
+    const toCome = stillToCome(c, { graded: items.length, entered });
+    const { kept, dropped, held } = applyDrops(items, c.drop_lowest_n, { toCome });
 
     const earned = sum(kept, (i) => i.earned);
     const possible = sum(kept, (i) => i.possible);
@@ -106,11 +199,23 @@ function summarize(categories, itemsByCat) {
       countedWeight += weight;
     }
 
+    const expectedCount = num(c.expected_count);
+
     return {
       id: c.id,
       name: c.name,
       weight,
       dropLowestN: num(c.drop_lowest_n) ?? 0,
+      // Drops the syllabus grants that haven't been spent, because a score
+      // still to come could turn out to be the one they take. Reported so a
+      // category that looks unexpectedly low has a reason attached to it.
+      dropsHeld: held,
+      // What the syllabus said there would be, and what nobody has written down
+      // yet. Null expected means it didn't say, which is its own answer.
+      expectedCount: expectedCount != null && expectedCount > 0 ? Math.floor(expectedCount) : null,
+      enteredCount: entered,
+      unenteredCount: Math.max(0, (expectedCount ?? 0) - entered),
+      creditBasis: c.credit_basis === 'completion' ? 'completion' : 'score',
       pct,
       earned,
       possible,
@@ -176,7 +281,17 @@ export function gradeCourse({ categories = [], assignments = [], overrides = {},
     }
   }
 
-  const { pct, cats, countedWeight } = summarize(categories, itemsByCat);
+  // Every row filed in a category, graded or not — what applyDrops needs to
+  // know whether a drop still has somewhere else to land.
+  const enteredByCat = new Map();
+  for (const c of categories) {
+    enteredByCat.set(
+      c.id,
+      (itemsByCat.get(c.id)?.length ?? 0) + (remainingByCat.get(c.id)?.length ?? 0),
+    );
+  }
+
+  const { pct, cats, countedWeight } = summarize(categories, itemsByCat, enteredByCat);
 
   const categoriesOut = cats.map((c) => {
     const remaining = remainingByCat.get(c.id) ?? [];
@@ -184,6 +299,10 @@ export function gradeCourse({ categories = [], assignments = [], overrides = {},
       ...c,
       remainingCount: remaining.length,
       remainingPossible: sum(remaining, (r) => r.possible),
+      // What one of these is worth, for the rows that don't exist yet. The most
+      // common value rather than the mean: one 200-point makeup quiz should not
+      // redefine what a quiz is worth for the four still to come.
+      typicalPossible: typicalPossible([...(itemsByCat.get(c.id) ?? []), ...remaining]),
     };
   });
 
@@ -200,34 +319,88 @@ export function gradeCourse({ categories = [], assignments = [], overrides = {},
     notCountedCount: notCounted.length,
     remainingCount: sum(categoriesOut, (c) => c.remainingCount),
     remainingPossible: sum(categoriesOut, (c) => c.remainingPossible),
+    // Work the syllabus promises that nobody has typed in. Held apart from
+    // `remainingCount` because they are different kinds of missing: one is a
+    // row waiting for a score, the other is a row waiting to exist.
+    unenteredCount: sum(categoriesOut, (c) => c.unenteredCount),
+    // Categories carrying weight that never said how many items they'd have.
+    // Not a mistake — "homework is 10%, however many I set" is most of them —
+    // but it is the assumption every forecast below is standing on, and the UI
+    // says so rather than implying the term is more settled than it is.
+    unstated: categoriesOut
+      .filter((c) => c.weight > 0 && c.expectedCount == null)
+      .map((c) => ({ id: c.id, name: c.name })),
   };
 }
 
 // ---------------------------------------------------------------- forecasting
 
+/**
+ * The rows a category is going to have that nobody has typed in.
+ *
+ * A syllabus saying "seven quizzes" and an app holding three of them disagree
+ * about how much of the term is left, and the app is the one that's wrong. Every
+ * forecast below is a statement about the finished course, so the four quizzes
+ * that haven't happened have to be in it — at whatever a quiz in this course is
+ * worth, which is the only part that has to be guessed.
+ *
+ * Returns one entry per category with rows missing, so both the projection and
+ * the count the solver reports come from the same place.
+ */
+function unenteredItems({ categories, assignments }) {
+  const known = new Set(categories.map((c) => c.id));
+  const rowsByCat = new Map();
+
+  for (const a of assignments) {
+    if (a.counts_toward_grade === false) continue;
+    if (!a.category_id || !known.has(a.category_id)) continue;
+    const list = rowsByCat.get(a.category_id) ?? [];
+    list.push({ possible: num(a.points_possible) ?? 0 });
+    rowsByCat.set(a.category_id, list);
+  }
+
+  const out = [];
+  for (const c of categories) {
+    const rows = rowsByCat.get(c.id) ?? [];
+    const expected = num(c.expected_count);
+    const missing = expected != null && expected > 0 ? Math.floor(expected) - rows.length : 0;
+    if (missing > 0) out.push({ id: c.id, count: missing, possible: typicalPossible(rows) });
+  }
+  return out;
+}
+
 // The overall percentage if every still-ungraded assignment came back at the
 // same fraction `frac` (1 = 100%). Runs the real summarize(), so drop-lowest
 // rules and weight re-normalization apply to the projected term exactly as they
-// will to the real one.
-function projectAt({ categories, assignments, overrides, frac }) {
+// will to the real one — and in a projected term every score exists, so every
+// drop the syllabus grants is spent rather than held.
+function projectAt({ categories, assignments, overrides, frac, unentered = [] }) {
   const known = new Set(categories.map((c) => c.id));
   const itemsByCat = new Map();
+
+  const push = (categoryId, item) => {
+    const list = itemsByCat.get(categoryId) ?? [];
+    list.push(item);
+    itemsByCat.set(categoryId, list);
+  };
 
   for (const a of assignments) {
     if (a.counts_toward_grade === false) continue;
     if (!a.category_id || !known.has(a.category_id)) continue;
 
-    const possible = num(a.points_possible) ?? 0;
-    if (!(possible > 0)) continue;
-
+    // Scored first, so extra credit — worth nothing and earning something —
+    // reaches the projection the same way it reaches the live grade. An
+    // unscored zero-point row is skipped: there is nothing there to project.
     const score = scoreOf(a, num(overrides[a.id]));
-    const item = score
-      ? { key: a.id, ...score }
-      : { key: a.id, earned: frac * possible, possible };
+    const possible = num(a.points_possible) ?? 0;
+    if (score) push(a.category_id, { key: a.id, ...score });
+    else if (possible > 0) push(a.category_id, { key: a.id, earned: frac * possible, possible });
+  }
 
-    const list = itemsByCat.get(a.category_id) ?? [];
-    list.push(item);
-    itemsByCat.set(a.category_id, list);
+  for (const u of unentered) {
+    for (let i = 0; i < u.count; i++) {
+      push(u.id, { key: `~${u.id}:${i}`, earned: frac * u.possible, possible: u.possible });
+    }
   }
 
   return summarize(categories, itemsByCat).pct;
@@ -265,7 +438,9 @@ export function neededOnRemaining(
       scoreOf(a, num(overrides[a.id])) == null,
   );
 
-  const at = (frac) => projectAt({ categories, assignments, overrides, frac });
+  const unentered = unenteredItems({ categories, assignments });
+
+  const at = (frac) => projectAt({ categories, assignments, overrides, frac, unentered });
   const floor = at(0); // bomb everything left
   const ceiling = at(1); // ace everything left
   const base = {
@@ -276,12 +451,26 @@ export function neededOnRemaining(
     ceilingLetter: letterFor(ceiling, scale),
     remainingCount: remaining.length,
     remainingPossible: sum(remaining, (a) => num(a.points_possible) ?? 0),
+    // The work the syllabus promises but the app has never been shown. Counted
+    // apart from `remainingCount` because "eight things left" and "eight things
+    // left, four of which you haven't written down" are answers a person acts
+    // on differently — and because the number below is an average over both.
+    unenteredCount: sum(unentered, (u) => u.count),
+    unenteredPossible: sum(unentered, (u) => u.count * u.possible),
+    // Categories with weight that never said how many items they'd have. Every
+    // number here assumes what's entered is all there is; these are where that
+    // assumption is doing work.
+    unstated: categories
+      .filter((c) => (num(c.weight_pct) ?? 0) > 0 && !(num(c.expected_count) > 0))
+      .map((c) => ({ id: c.id, name: c.name })),
   };
 
   if (target == null) return { ...base, status: 'no-target', needed: null };
 
-  // Nothing left to score on: the grade is what it is.
-  if (!remaining.length) {
+  // Nothing left to score on: the grade is what it is. Work the syllabus
+  // promises but nobody has entered still counts as left — the course is not
+  // finished just because the typing is behind.
+  if (!remaining.length && !base.unenteredCount) {
     return {
       ...base,
       status: 'no-remaining',

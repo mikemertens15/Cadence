@@ -11,6 +11,17 @@ export function Card({ as: Tag = 'div', children, style, ...rest }) {
       style={{
         display: 'block',
         width: '100%',
+        // A card never widens the column it is in.
+        //
+        // Grid and flex items are `min-width: auto` by default, which means
+        // they refuse to shrink below their own content — so one long
+        // un-breakable string anywhere inside a card pushes the card past its
+        // track, and the whole page grows a horizontal scrollbar to fit it. The
+        // text inside already knows what to do about being too long: every
+        // title in here is nowrap with an ellipsis, and none of that has any
+        // effect until something upstream is willing to be narrower than the
+        // text. This is that something.
+        minWidth: 0,
         textAlign: 'left',
         background: colors.card,
         border: `1px solid ${colors.cardBorder}`,

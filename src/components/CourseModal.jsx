@@ -27,25 +27,38 @@ import {
 
 // A four-part scheme covers most syllabi and, more importantly, shows the shape
 // of the thing: named buckets, weights, adding to 100.
+//
+// `expected` is how many items the syllabus says the bucket will hold, and it is
+// blank in every preset on purpose: a made-up count is worse than none, because
+// the whole value of the number is that it came off a syllabus. `basis` is how
+// the professor scores it — points, or the fact you were there.
+const blank = (name, weight, drop = 0) => ({ name, weight, drop, expected: '', basis: 'score' });
+
 const DEFAULT_SCHEME = [
-  { name: 'Homework', weight: 20, drop: 0 },
-  { name: 'Quizzes', weight: 15, drop: 0 },
-  { name: 'Midterm', weight: 25, drop: 0 },
-  { name: 'Final', weight: 40, drop: 0 },
+  blank('Homework', 20),
+  blank('Quizzes', 15),
+  blank('Midterm', 25),
+  blank('Final', 40),
 ];
 
 const PRESETS = [
   ['Four-part', DEFAULT_SCHEME],
   [
     'Two exams',
+    [blank('Homework', 30), blank('Exam 1', 20), blank('Exam 2', 20), blank('Final', 30)],
+  ],
+  ['One bucket', [blank('Everything', 100)]],
+  // The shape the release exists for: a weight earned by turning up, and a
+  // number of class days to earn it over. Offered as a preset because it is the
+  // one scheme people don't think to look for a way to express.
+  [
+    'With attendance',
     [
-      { name: 'Homework', weight: 30, drop: 0 },
-      { name: 'Exam 1', weight: 20, drop: 0 },
-      { name: 'Exam 2', weight: 20, drop: 0 },
-      { name: 'Final', weight: 30, drop: 0 },
+      blank('Homework', 20),
+      blank('Exams', 50),
+      { name: 'Attendance', weight: 30, drop: 0, expected: '', basis: 'completion' },
     ],
   ],
-  ['One bucket', [{ name: 'Everything', weight: 100, drop: 0 }]],
 ];
 
 // Existing meeting rows collapse back into the blocks this form edits: three
@@ -68,6 +81,7 @@ const newBlock = () => ({ days: [], start: '09:00', end: '09:50' });
 export function CourseModal({ course, onClose, phone }) {
   const {
     activeTerm,
+    features,
     categoriesByCourse,
     meetingsByCourse,
     scaleByCourse,
@@ -110,6 +124,11 @@ export function CourseModal({ course, onClose, phone }) {
           name: c.name,
           weight: Number(c.weight_pct),
           drop: c.drop_lowest_n ?? 0,
+          // Empty string rather than null, because this is an input's value and
+          // React would otherwise switch it from uncontrolled to controlled the
+          // first time somebody types a digit into it.
+          expected: c.expected_count == null ? '' : String(c.expected_count),
+          basis: c.credit_basis === 'completion' ? 'completion' : 'score',
         }))
       : DEFAULT_SCHEME.map((c) => ({ ...c })),
   );
@@ -133,6 +152,20 @@ export function CourseModal({ course, onClose, phone }) {
   );
   const weightsOk = Math.abs(weightTotal - 100) < 0.01;
   const canSave = name.trim() && !busy;
+
+  // How many of each, and marks for turning up. Behind the beta channel until
+  // it has had a semester pointed at it — see BETA in src/features.js. Nothing
+  // stored is gated: a course whose categories carry counts still grades on them
+  // for everyone, because the engine reads the columns regardless. This decides
+  // only whether the questions are asked.
+  const richScheme = features.has('grades.scheme');
+
+  // Somebody who has turned the timetable off is not going to be asked when the
+  // class meets — it is the longest section on this form and it feeds a screen
+  // they don't have. Their existing meeting rows are left exactly alone rather
+  // than saved back from a form that stopped showing them: an editor you can't
+  // see is not an editor you meant to submit.
+  const askMeetings = features.schedule;
 
   const patchCat = (i, patch) => setCats((cs) => cs.map((c, j) => (j === i ? { ...c, ...patch } : c)));
   const patchBlock = (i, patch) => setBlocks((bs) => bs.map((b, j) => (j === i ? { ...b, ...patch } : b)));
@@ -158,7 +191,12 @@ export function CourseModal({ course, onClose, phone }) {
 
     const cleanCats = cats
       .filter((c) => c.name.trim())
-      .map((c) => ({ ...c, weight: Number(c.weight) || 0, drop: Number(c.drop) || 0 }));
+      .map((c) => ({
+        ...c,
+        weight: Number(c.weight) || 0,
+        drop: Number(c.drop) || 0,
+        expected: Number(c.expected) > 0 ? Number(c.expected) : null,
+      }));
     const scaleRows =
       scaleKind === 'straight' ? [] : scaleKind === 'plusminus' ? PLUS_MINUS_SCALE : customScale;
 
@@ -182,7 +220,7 @@ export function CourseModal({ course, onClose, phone }) {
         grading_basis: basis,
         status,
       });
-      await setMeetings(course.id, expandMeetings());
+      if (askMeetings) await setMeetings(course.id, expandMeetings());
       await setCategories(course.id, cleanCats);
       await setScale(course.id, scaleRows);
       await setCoursePrograms(course.id, planIds);
@@ -192,7 +230,7 @@ export function CourseModal({ course, onClose, phone }) {
         ...fields,
         gradingBasis: basis,
         status,
-        meetings: expandMeetings(),
+        meetings: askMeetings ? expandMeetings() : [],
         categories: cleanCats,
         programIds: planIds,
       });
@@ -364,18 +402,22 @@ export function CourseModal({ course, onClose, phone }) {
         />
       )}
 
-      <Divider />
+      {askMeetings && <Divider />}
 
       {/* ---------------------------------------------------------- meetings */}
-      <SectionTitle
-        title="When it meets"
-        hint="Fills in your weekly schedule"
-        action={
-          <TinyButton onClick={() => setBlocks((bs) => [...bs, newBlock()])}>+ Add a time</TinyButton>
-        }
-      />
+      {askMeetings && (
+        <SectionTitle
+          title="When it meets"
+          hint="Fills in your weekly schedule"
+          action={
+            <TinyButton onClick={() => setBlocks((bs) => [...bs, newBlock()])}>
+              + Add a time
+            </TinyButton>
+          }
+        />
+      )}
 
-      {blocks.map((b, i) => (
+      {askMeetings && blocks.map((b, i) => (
         <div
           key={i}
           style={{
@@ -442,12 +484,16 @@ export function CourseModal({ course, onClose, phone }) {
       <SectionTitle
         title="How it's graded"
         hint="Straight off the syllabus"
-        action={<TinyButton onClick={() => setCats((cs) => [...cs, { name: '', weight: 0, drop: 0 }])}>+ Category</TinyButton>}
+        action={
+          <TinyButton onClick={() => setCats((cs) => [...cs, blank('', 0)])}>+ Category</TinyButton>
+        }
       />
 
       {!editing && (
         <div style={{ display: 'flex', gap: 7, marginBottom: 12, flexWrap: 'wrap' }}>
-          {PRESETS.map(([label, scheme]) => (
+          {PRESETS.filter(
+            ([, scheme]) => richScheme || !scheme.some((c) => c.basis === 'completion'),
+          ).map(([label, scheme]) => (
             <Chip key={label} onClick={() => setCats(scheme.map((c) => ({ ...c })))}>
               {label}
             </Chip>
@@ -455,61 +501,101 @@ export function CourseModal({ course, onClose, phone }) {
         </div>
       )}
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 66px 66px 24px',
-          gap: 8,
-          alignItems: 'center',
-          marginBottom: 6,
-        }}
-      >
-        <MiniLabel>Category</MiniLabel>
-        <MiniLabel>Weight</MiniLabel>
-        <MiniLabel title="Drop the lowest N scores in this category">Drop</MiniLabel>
-        <span />
-      </div>
-
+      {/* A card per category rather than a row in a table.
+          The table was four inputs across, and it was already tight enough on a
+          phone that the name field held about six characters. "Seven of them,
+          lowest two dropped" needs two more answers than it had room for, and
+          the honest way to find that room is to stop pretending a syllabus fits
+          on one line. */}
       {cats.map((c, i) => (
         <div
           key={c.id ?? i}
           style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 66px 66px 24px',
-            gap: 8,
-            alignItems: 'center',
-            marginBottom: 8,
+            background: colors.inputBg,
+            border: `1px solid ${colors.cardBorder}`,
+            borderRadius: 14,
+            padding: 12,
+            marginBottom: 10,
           }}
         >
-          <input
-            value={c.name}
-            onChange={(e) => patchCat(i, { name: e.target.value })}
-            placeholder="Labs"
-            style={inputStyle}
-          />
-          <input
-            type="number"
-            min="0"
-            max="100"
-            value={c.weight}
-            onChange={(e) => patchCat(i, { weight: e.target.value })}
-            style={{ ...inputStyle, textAlign: 'right' }}
-          />
-          <input
-            type="number"
-            min="0"
-            value={c.drop}
-            onChange={(e) => patchCat(i, { drop: e.target.value })}
-            style={{ ...inputStyle, textAlign: 'right' }}
-          />
-          <button
-            type="button"
-            onClick={() => setCats((cs) => cs.filter((_, j) => j !== i))}
-            aria-label={`Remove ${c.name || 'category'}`}
-            style={{ color: colors.muted, fontSize: 18 }}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+            <input
+              value={c.name}
+              onChange={(e) => patchCat(i, { name: e.target.value })}
+              placeholder="Labs"
+              aria-label="Category name"
+              style={{ ...inputStyle, flex: 1, minWidth: 0, background: colors.card }}
+            />
+            <button
+              type="button"
+              onClick={() => setCats((cs) => cs.filter((_, j) => j !== i))}
+              aria-label={`Remove ${c.name || 'category'}`}
+              style={{ color: colors.muted, fontSize: 18, padding: '0 2px' }}
+            >
+              ×
+            </button>
+          </div>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: richScheme ? '1fr 1fr 1fr' : '1fr 1fr',
+              gap: 8,
+            }}
           >
-            ×
-          </button>
+            <NumberField
+              label="Weight"
+              suffix="%"
+              value={c.weight}
+              onChange={(v) => patchCat(i, { weight: v })}
+              max="100"
+            />
+            {/* Blank is a real answer and the common one: "homework is 10%,
+                however many he sets". It is what the forecast then says it is
+                assuming, rather than a number the app invented. */}
+            {richScheme && (
+              <NumberField
+                label="How many"
+                hint="if the syllabus says"
+                value={c.expected}
+                onChange={(v) => patchCat(i, { expected: v })}
+                placeholder="—"
+              />
+            )}
+            <NumberField
+              label="Drop lowest"
+              value={c.drop}
+              onChange={(v) => patchCat(i, { drop: v })}
+            />
+          </div>
+
+          {richScheme && (
+            <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+              <Chip active={c.basis !== 'completion'} onClick={() => patchCat(i, { basis: 'score' })}>
+                Scored
+              </Chip>
+              <Chip
+                active={c.basis === 'completion'}
+                onClick={() => patchCat(i, { basis: 'completion' })}
+              >
+                Just turn up
+              </Chip>
+            </div>
+          )}
+
+          {richScheme && c.basis === 'completion' && (
+            <div style={{ font: `400 11.5px/1.5 ${fonts.sans}`, color: colors.faint, marginTop: 8 }}>
+              Marked present or missed instead of scored &mdash; for the in-class work nobody
+              checks for correctness.
+            </div>
+          )}
+
+          {richScheme && Number(c.drop) > 0 && !(Number(c.expected) > 0) && (
+            <div style={{ font: `400 11.5px/1.5 ${fonts.sans}`, color: colors.faint, marginTop: 8 }}>
+              Without a count, a drop is spent on the worst score so far &mdash; which flatters
+              this category until the term fills in. Say how many there&rsquo;ll be and it waits.
+            </div>
+          )}
         </div>
       ))}
 
@@ -644,5 +730,38 @@ function MiniLabel({ children, title }) {
     <span title={title} style={{ font: `600 11px ${fonts.sans}`, color: colors.faint }}>
       {children}
     </span>
+  );
+}
+
+// A small labelled number, for the three questions a category answers about
+// itself. Labelled rather than placeheld: "20 / 7 / 2" in a row of bare boxes is
+// unreadable a week later, and a syllabus is exactly the thing you come back to
+// a week later.
+function NumberField({ label, hint, value, onChange, suffix, placeholder, max }) {
+  return (
+    <label style={{ display: 'block', minWidth: 0 }}>
+      <span style={{ display: 'flex', alignItems: 'baseline', gap: 5, marginBottom: 4 }}>
+        <MiniLabel>{label}</MiniLabel>
+        {hint && (
+          <span style={{ font: `400 10px ${fonts.sans}`, color: colors.faint, opacity: 0.8 }}>
+            {hint}
+          </span>
+        )}
+      </span>
+      <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+        <input
+          type="number"
+          min="0"
+          max={max}
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+          style={{ ...inputStyle, background: colors.card, textAlign: 'right', minWidth: 0 }}
+        />
+        {suffix && (
+          <span style={{ font: `500 12px ${fonts.sans}`, color: colors.muted2 }}>{suffix}</span>
+        )}
+      </span>
+    </label>
   );
 }

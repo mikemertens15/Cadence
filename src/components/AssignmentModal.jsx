@@ -1,12 +1,30 @@
 import { useState, useMemo } from 'react';
 import { colors, tone, fonts, courseColor } from '../theme';
-import { dayStr, addDays, endOfDay, atTime, toLocalInput, fromLocalInput, parseDay, monthDay } from '../dates';
+import {
+  dayStr,
+  addDays,
+  toLocalInput,
+  fromLocalInput,
+  parseDay,
+  monthDay,
+  fmtMinutes,
+  fmtTimeRange,
+  toMinutes,
+  dowIndex,
+  HOUR_OPTIONS,
+  END_OF_DAY,
+  isOffHour,
+  labelForTime,
+  dayPart,
+  timePart,
+} from '../dates';
 import {
   KINDS,
   DEFAULT_KIND,
   isEvent,
   kindLabel,
   DEFAULT_EVENT_MINUTES,
+  meetsOn,
   suggestCategory,
   suggestPoints,
   seriesTitles,
@@ -37,6 +55,23 @@ import {
 // word on an exam, and defaulting an exam to midnight is the wrong time — so
 // the label, the quick-pick chips and the default hour all follow from it.
 //
+// Two things about time changed in 1.4, both of them subtraction.
+//
+// **The minutes are gone.** No syllabus has ever said 11:47. It says midnight,
+// or before class, or five o'clock — so the minute half of a time picker was a
+// field that existed to be left alone, and on a phone it was two extra taps and
+// a scroll wheel every single time. An hour is the whole vocabulary. A time
+// already stored off the hour keeps its own entry in the list rather than being
+// snapped, because quietly moving a deadline somebody set is a worse failure
+// than an odd-looking dropdown.
+//
+// **An exam in class doesn't ask when.** A dynamics exam is the dynamics class
+// doing something different on a Tuesday, and the hour is a fact the app has had
+// since the course was entered. So when the class meets that day it offers the
+// meeting, and the answer is one tap rather than a time and a duration. The rest
+// — a common final at 8am on a Saturday in a building you have never been to —
+// is what "another time" is still there for.
+//
 // Since 1.0 the kind decides one more thing, and it's the one that was costing
 // the most: **which category the work goes in**. Picking "Quiz" and then picking
 // "Quizzes" is the same decision twice, and the second one is the one you skip —
@@ -58,11 +93,19 @@ const NOT_GRADED = '\u0000not-graded';
 
 const MAX_REPEAT = 60;
 
+// A stable identity for "this course has no meeting times". `?? []` would be a
+// fresh array on every render, and two of the memos below take it as a
+// dependency — which would make them run every render and stop being memos.
+const NO_MEETINGS = [];
+
 export function AssignmentModal({ assignment, defaultCourseId, onClose, phone }) {
   const {
     courses,
+    activeTerm,
     categoriesByCourse,
     assignmentsByCourse,
+    meetingsByCourse,
+    breakOn,
     createAssignment,
     createAssignments,
     updateAssignment,
@@ -104,9 +147,20 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
   const [touchedCategory, setTouchedCategory] = useState(false);
   const [touchedPoints, setTouchedPoints] = useState(false);
 
-  const [due, setDue] = useState(() =>
-    assignment ? toLocalInput(assignment.due_at) : toLocalInput(endOfDay(dayStr())),
+  // The date and the hour, held apart. They are two separate questions now that
+  // the second one has twenty-five answers instead of fourteen hundred, and a
+  // combined datetime-local string was only ever being split and rejoined at
+  // every point either half was touched.
+  const [day, setDay] = useState(() =>
+    assignment ? dayPart(toLocalInput(assignment.due_at)) : dayStr(),
   );
+  const [time, setTime] = useState(() =>
+    assignment ? timePart(toLocalInput(assignment.due_at)) || END_OF_DAY : END_OF_DAY,
+  );
+  // An exam that happens whenever the class does. True by default for a new
+  // event on a day the course meets — which is nearly all of them — and read
+  // off the row when editing one.
+  const [atClass, setAtClass] = useState(() => assignment?.at_class_time === true);
   const [duration, setDuration] = useState(
     String(assignment?.duration_min ?? DEFAULT_EVENT_MINUTES),
   );
@@ -123,11 +177,19 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
           kind: startKind,
           categoryId: suggestion.categoryId,
           assignments: assignmentsByCourse.get(startCourse) ?? [],
+          fallback:
+            (categoriesByCourse.get(startCourse) ?? []).find((c) => c.id === suggestion.categoryId)
+              ?.credit_basis === 'completion'
+              ? 1
+              : 100,
         }),
     ),
   );
   const [notes, setNotes] = useState(assignment?.notes ?? '');
-  const [repeat, setRepeat] = useState(false);
+  // 'once' | 'weekly' | 'classes'. A string rather than a boolean since 1.4,
+  // because the third one — one row per class meeting, to the end of term — is
+  // what a thirty-percent attendance weight is made of.
+  const [repeat, setRepeat] = useState('once');
   const [times, setTimes] = useState('14');
   const [expanded, setExpanded] = useState(!phone || editing);
   const [busy, setBusy] = useState(false);
@@ -137,6 +199,36 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
   const course = courses.find((c) => c.id === courseId);
   const event = isEvent(kind);
   const canSave = title.trim() && courseId && !busy;
+
+  const courseMeetings = meetingsByCourse.get(courseId) ?? NO_MEETINGS;
+
+  // The meetings of this course on the chosen day, earliest first. Null when it
+  // doesn't meet — which is what decides whether the form asks for an hour at
+  // all, and what "In class" is even offered against.
+  const slots = useMemo(() => meetsOn(courseMeetings, day), [courseMeetings, day]);
+
+  // Which of them, when a course has a lecture in the morning and a lab in the
+  // afternoon. The nearest to the hour already on the row, so an exam moved from
+  // one to the other stays where it was put.
+  const slot = useMemo(() => {
+    if (!slots?.length) return null;
+    const want = toMinutes(time || '00:00');
+    return slots.reduce((best, m) =>
+      Math.abs(toMinutes(m.start_time) - want) < Math.abs(toMinutes(best.start_time) - want) ? m : best,
+    );
+  }, [slots, time]);
+
+  // In class is a claim that needs a class. A date moved to a day the course
+  // doesn't meet un-makes it rather than leaving a flag pointing at nothing.
+  const inClass = event && atClass && Boolean(slot);
+
+  // The hour that actually gets stored. An in-class exam takes the class's,
+  // which is the entire point of the flag — the row still carries a real instant
+  // so everything that sorts by it or counts days to it is untouched.
+  const stamp = inClass ? slot.start_time.slice(0, 5) : time;
+  const minutes = inClass
+    ? toMinutes(slot.end_time) - toMinutes(slot.start_time)
+    : Number(duration) || DEFAULT_EVENT_MINUTES;
 
   // The rest of the batch this row was created with, if any. Only ever within
   // one course — a series is fourteen weeks of one class.
@@ -149,7 +241,6 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
   );
 
   const count = Math.max(1, Math.min(MAX_REPEAT, Math.floor(Number(times)) || 1));
-  const repeating = repeat && !editing && Boolean(due) && count > 1;
 
   /**
    * Re-derive what this work is worth and where it goes.
@@ -168,37 +259,56 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
       setCategoryId(s.categoryId ?? '');
       setGraded(!isUngradedReason(s.reason));
     }
-    if (!touchedPoints) {
-      setPoints(String(suggestPoints({ kind: nextKind, categoryId: s.categoryId, assignments: nextWork })));
-    }
+    if (!touchedPoints) setPoints(String(pointsFor(s.categoryId, nextCats, nextWork, nextKind)));
+  }
+
+  /**
+   * What this is probably worth, with one exception the fallback has to know
+   * about.
+   *
+   * A category graded on turning up has no natural point value — nothing was
+   * measured — so what it wants is one point each and a count. Falling back to
+   * 100 there produces "0 or 100" toggles and a category whose numbers look
+   * like scores, which is exactly the impression the completion basis exists to
+   * remove.
+   */
+  function pointsFor(cid, list, work, forKind = kind) {
+    const completion = list.find((c) => c.id === cid)?.credit_basis === 'completion';
+    return suggestPoints({
+      kind: forKind,
+      categoryId: cid,
+      assignments: work,
+      fallback: completion ? 1 : 100,
+    });
   }
 
   // Quick date chips beat a calendar for the three dates that cover almost
-  // everything. Work lands on 11:59pm, which is when work is actually due; an
-  // exam lands at 9am, because nobody sits a final at midnight and an hour you
-  // have to clear is worse than one you have to confirm.
-  const setDay = (offset) => {
-    const day = addDays(dayStr(), offset);
-    setDue(toLocalInput(event ? atTime(day, 9, 0) : endOfDay(day)));
-  };
+  // everything.
+  const pickDay = (offset) => setDay(addDays(dayStr(), offset));
 
   /**
-   * Switching kind re-times the date, but only the part of it nobody chose.
+   * Switching kind re-times the row, but only the part of it nobody chose.
    *
-   * Picking "Final" on a row still sitting at the untouched 11:59pm should move
-   * to a believable exam hour; picking it on a row where someone already typed
-   * 2:00pm should leave that alone. The test is whether the current time is
-   * exactly one of the two defaults — anything else is a deliberate answer.
+   * Picking "Final" on a row still sitting at the untouched 11:59pm should stop
+   * being an end-of-day deadline; picking it on a row where someone already
+   * chose 2pm should leave that alone. The test is whether the hour is still one
+   * of the two defaults — anything else is a deliberate answer.
+   *
+   * An exam on a day the class meets goes straight to "in class", which is the
+   * whole point: the common case now asks for nothing beyond a date.
    */
   const changeKind = (next) => {
     setKind(next);
     applySuggestion(next, courseId);
 
-    if (!due) return;
-    const [day, time] = due.split('T');
     const nowEvent = isEvent(next);
-    if (time === '23:59' && nowEvent) setDue(toLocalInput(atTime(day, 9, 0)));
-    else if (time === '09:00' && !nowEvent) setDue(toLocalInput(endOfDay(day)));
+    if (!nowEvent) {
+      setAtClass(false);
+      if (time === '09:00') setTime(END_OF_DAY);
+      return;
+    }
+    if (meetsOn(courseMeetings, day)) setAtClass(true);
+    else if (time === END_OF_DAY) setTime('09:00');
   };
 
   const changeCourse = (next) => {
@@ -207,15 +317,54 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
     // one's scheme is not a choice about this one — it's a stale id.
     setTouchedCategory(false);
     applySuggestion(kind, next, { force: true });
+    // And a meeting belongs to a course too: "in class" against the timetable
+    // of the course you just switched away from is not a statement about this
+    // one either.
+    if (isEvent(kind)) setAtClass(Boolean(meetsOn(meetingsByCourse.get(next) ?? [], day)));
   };
 
-  // Every date in the run, so the form can show where it ends before you commit
-  // to fourteen rows.
+  /**
+   * Every date in the run, so the form can show where it ends before you commit
+   * to fourteen rows.
+   *
+   * Three shapes, and the third is the one attendance needs. "Weekly" is a
+   * syllabus that says problem sets are due Fridays. "Every class" is a
+   * professor who takes a mark for turning up: it walks the timetable to the end
+   * of term, one row per meeting, skipping the days a break has already
+   * cancelled — because there is no class on Thanksgiving and therefore nothing
+   * to turn up to. It takes each meeting's own start time, so a course that
+   * meets at 9 on Monday and 2 on Friday lands each row where it belongs.
+   */
   const dates = useMemo(() => {
-    if (!due) return [];
-    const [day, time] = due.split('T');
-    return Array.from({ length: repeating ? count : 1 }, (_, i) => `${addDays(day, i * 7)}T${time}`);
-  }, [due, repeating, count]);
+    if (!day) return [];
+    if (repeat === 'weekly' && !editing) {
+      return Array.from({ length: count }, (_, i) => `${addDays(day, i * 7)}T${stamp}`);
+    }
+    if (repeat === 'classes' && !editing && courseMeetings.length) {
+      const last = activeTerm?.end_date ?? addDays(day, 7 * 16);
+      const byDow = new Map();
+      for (const m of courseMeetings) {
+        const at = toMinutes(m.start_time);
+        if (!byDow.has(m.day_of_week) || at < byDow.get(m.day_of_week)) byDow.set(m.day_of_week, at);
+      }
+      const out = [];
+      for (let d = day; d <= last && out.length < MAX_REPEAT; d = addDays(d, 1)) {
+        const at = byDow.get(dowIndex(parseDay(d)));
+        if (at == null || breakOn(d)) continue;
+        const h = String(Math.floor(at / 60)).padStart(2, '0');
+        const mm = String(at % 60).padStart(2, '0');
+        out.push(`${d}T${h}:${mm}`);
+      }
+      // No meetings between here and the end of term — a date past the last
+      // week, or a course that only meets on days already given over to a
+      // break. Falls through to the single row rather than saving nothing,
+      // because "Add" pressed on a filled-in form has to add something.
+      if (out.length) return out;
+    }
+    return [`${day}T${stamp}`];
+  }, [day, stamp, repeat, count, editing, courseMeetings, activeTerm, breakOn]);
+
+  const repeating = !editing && Boolean(day) && dates.length > 1;
 
   async function save() {
     if (!canSave) return;
@@ -231,8 +380,9 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
       // Only the kinds drawn on a schedule have a length. Clearing it on the
       // others means switching a mistyped "Final" back to "Assignment" doesn't
       // leave a stray fifty minutes on a row nothing will ever read it from.
-      durationMin: event ? Number(duration) || DEFAULT_EVENT_MINUTES : null,
+      durationMin: event ? minutes : null,
       countsTowardGrade: graded,
+      atClassTime: inClass,
     };
 
     if (editing) {
@@ -240,12 +390,13 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
         course_id: courseId,
         category_id: fields.categoryId,
         title: fields.title,
-        due_at: fromLocalInput(due),
+        due_at: day ? fromLocalInput(dates[0]) : null,
         points_possible: fields.pointsPossible,
         notes: fields.notes,
         kind,
         duration_min: fields.durationMin,
         counts_toward_grade: graded,
+        at_class_time: inClass,
       });
     } else {
       try {
@@ -255,12 +406,12 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
       }
 
       if (repeating) {
-        const titles = seriesTitles(fields.title, count);
+        const titles = seriesTitles(fields.title, dates.length);
         await createAssignments(
           titles.map((t, i) => ({ ...fields, title: t, dueAt: fromLocalInput(dates[i]) })),
         );
       } else {
-        await createAssignment({ ...fields, dueAt: fromLocalInput(due) });
+        await createAssignment({ ...fields, dueAt: day ? fromLocalInput(dates[0]) : null });
       }
     }
 
@@ -357,35 +508,97 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
         hint={event ? 'goes on your schedule' : undefined}
       >
         <div style={{ display: 'flex', gap: 7, marginBottom: 9, flexWrap: 'wrap' }}>
-          <Chip onClick={() => setDay(0)}>Today</Chip>
-          <Chip onClick={() => setDay(1)}>Tomorrow</Chip>
-          <Chip onClick={() => setDay(7)}>Next week</Chip>
-          <Chip onClick={() => setDue('')}>No date</Chip>
+          <Chip onClick={() => pickDay(0)}>Today</Chip>
+          <Chip onClick={() => pickDay(1)}>Tomorrow</Chip>
+          <Chip onClick={() => pickDay(7)}>Next week</Chip>
+          <Chip onClick={() => setDay('')}>No date</Chip>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            type="datetime-local"
-            value={due}
-            onChange={(e) => setDue(e.target.value)}
-            style={{ ...input, flex: 1, minWidth: 0 }}
-          />
-          {/* Only an event has a length, and only because the schedule has to
-              draw it as a block of some height. */}
-          {event && (
-            <>
-              <input
-                type="number"
-                min="5"
-                step="5"
-                value={duration}
-                onChange={(e) => setDuration(e.target.value)}
-                aria-label="How long it lasts, in minutes"
-                style={{ ...input, width: 74, textAlign: 'right' }}
-              />
-              <span style={{ font: `500 12px ${fonts.sans}`, color: colors.muted2 }}>min</span>
-            </>
-          )}
-        </div>
+
+        <input
+          type="date"
+          value={day}
+          onChange={(e) => {
+            setDay(e.target.value);
+            // A date on a day the class meets is an in-class exam by default,
+            // and a date on a day it doesn't cannot be one at all.
+            if (event) setAtClass(Boolean(meetsOn(courseMeetings, e.target.value)));
+          }}
+          style={{ ...input, width: '100%' }}
+        />
+
+        {/* An exam on a day the class meets asks nothing else. The hour, the
+            room and the fifty minutes are all already in the timetable, and
+            asking for them again is asking someone to re-type what they told
+            the app in week one. */}
+        {event && day && slots?.length > 0 && (
+          <div style={{ display: 'flex', gap: 7, marginTop: 9, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Chip active={atClass} onClick={() => setAtClass(true)}>
+              In class
+            </Chip>
+            <Chip active={!atClass} onClick={() => setAtClass(false)}>
+              Another time
+            </Chip>
+            {inClass && slots.length === 1 && (
+              <span style={{ font: `500 12px ${fonts.sans}`, color: colors.muted2 }}>
+                {fmtTimeRange(toMinutes(slot.start_time), toMinutes(slot.end_time))}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Which meeting, for a course with a lecture in the morning and a lab
+            after lunch. Only ever drawn when there genuinely are two. */}
+        {inClass && slots.length > 1 && (
+          <div style={{ display: 'flex', gap: 7, marginTop: 9, flexWrap: 'wrap' }}>
+            {slots.map((m) => (
+              <Chip
+                key={m.id}
+                active={m.id === slot.id}
+                onClick={() => setTime(m.start_time.slice(0, 5))}
+              >
+                {fmtMinutes(toMinutes(m.start_time))}
+              </Chip>
+            ))}
+          </div>
+        )}
+
+        {day && !inClass && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 9 }}>
+            <select
+              value={time}
+              onChange={(e) => setTime(e.target.value)}
+              aria-label={event ? 'What time it starts' : 'What time it is due'}
+              style={{ ...input, flex: 1, minWidth: 0 }}
+            >
+              {/* A time typed in before this app only offered hours keeps its
+                  own entry, rather than being quietly rounded to one. */}
+              {isOffHour(time) && <option value={time}>{labelForTime(time)}</option>}
+              {HOUR_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+
+            {/* Only an event has a length, and only because the schedule has to
+                draw it as a block of some height. An in-class one takes the
+                class's, so the field isn't there to be answered. */}
+            {event && (
+              <>
+                <input
+                  type="number"
+                  min="5"
+                  step="5"
+                  value={duration}
+                  onChange={(e) => setDuration(e.target.value)}
+                  aria-label="How long it lasts, in minutes"
+                  style={{ ...input, width: 74, textAlign: 'right' }}
+                />
+                <span style={{ font: `500 12px ${fonts.sans}`, color: colors.muted2 }}>min</span>
+              </>
+            )}
+          </div>
+        )}
       </Field>
 
       {/* ------------------------------------------------------- the run
@@ -395,16 +608,25 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
           because a series is a thing you create rather than a property a row
           has, and hidden without a date, because fourteen undated copies of the
           same row help nobody. */}
-      {!editing && due && (
-        <Field label="Repeat" hint="every week, from that date">
+      {!editing && day && (
+        <Field label="Repeat" hint="from that date onward">
           <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
-            <Chip active={!repeat} onClick={() => setRepeat(false)}>
+            <Chip active={repeat === 'once'} onClick={() => setRepeat('once')}>
               Just once
             </Chip>
-            <Chip active={repeat} onClick={() => setRepeat(true)}>
+            <Chip active={repeat === 'weekly'} onClick={() => setRepeat('weekly')}>
               Weekly
             </Chip>
-            {repeat && (
+            {/* One row per class, to the end of term. A thirty-percent
+                attendance weight is thirty-odd rows that all say the same
+                thing, and typing them out is the single most tedious thing this
+                app could ask for — so it reads them off the timetable instead. */}
+            {courseMeetings.length > 0 && (
+              <Chip active={repeat === 'classes'} onClick={() => setRepeat('classes')}>
+                Every class
+              </Chip>
+            )}
+            {repeat === 'weekly' && (
               <>
                 <input
                   type="number"
@@ -428,10 +650,12 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
                 marginTop: 8,
               }}
             >
-              {count} rows &mdash; {seriesTitles(title.trim() || 'Untitled', count)[0]} through{' '}
-              {seriesTitles(title.trim() || 'Untitled', count)[count - 1]}, ending{' '}
-              {monthDay(parseDay(dates[count - 1].split('T')[0]))}. Breaks aren&rsquo;t skipped: work
-              set over a long weekend is still due.
+              {dates.length} rows &mdash; {seriesTitles(title.trim() || 'Untitled', dates.length)[0]}{' '}
+              through {seriesTitles(title.trim() || 'Untitled', dates.length)[dates.length - 1]},
+              ending {monthDay(parseDay(dayPart(dates[dates.length - 1])))}.{' '}
+              {repeat === 'classes'
+                ? 'One per meeting, with days off already taken out.'
+                : 'Breaks aren\u2019t skipped: work set over a long weekend is still due.'}
             </div>
           )}
         </Field>
@@ -456,6 +680,9 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
                   setTouchedCategory(true);
                   setGraded(v !== NOT_GRADED);
                   setCategoryId(v === NOT_GRADED ? '' : v);
+                  if (!touchedPoints && v && v !== NOT_GRADED) {
+                    setPoints(String(pointsFor(v, cats, assignmentsByCourse.get(courseId) ?? [])));
+                  }
                 }}
                 style={input}
               >
@@ -692,5 +919,53 @@ export function ScoreInput({ assignment, onCommit, width = 62 }) {
         textAlign: 'right',
       }}
     />
+  );
+}
+
+/**
+ * Present or missed, for the work that is graded on having been there.
+ *
+ * A thirty-percent attendance weight is thirty rows of in-class activities that
+ * nobody marks for correctness, and typing "20 out of 20" thirty times is both
+ * tedious and a small lie about what was measured — nothing was. So it writes
+ * full marks or a zero, which is the same arithmetic the professor is doing, and
+ * asks the question the professor actually asked.
+ *
+ * Three states, not two. Blank is "hasn't happened yet" and is the one an
+ * ungraded row starts in; a missed class is a real zero and has to be
+ * distinguishable from a Thursday that hasn't come round yet, or the category
+ * would count absences you haven't taken.
+ */
+export function PresentSwitch({ assignment: a, graded, possible, onScore }) {
+  const earned = Number(a.points_earned);
+  const here = graded && earned > 0;
+  const missed = graded && earned <= 0;
+
+  const button = (label, active, tint, onClick) => (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      style={{
+        padding: '6px 11px',
+        borderRadius: 9,
+        font: `600 11.5px ${fonts.sans}`,
+        background: active ? tint : colors.inputBg,
+        color: active ? colors.onAccent : colors.muted2,
+        border: `1px solid ${active ? tint : colors.inputBorder}`,
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
+      {/* Tapping the state it is already in clears it, which is the only way
+          back to "hasn't happened yet" — and the state you want the moment you
+          mark the wrong Thursday. */}
+      {button('Here', here, colors.accent, () => onScore(a.id, here ? null : possible || 1))}
+      {button('Missed', missed, tone.red, () => onScore(a.id, missed ? null : 0))}
+    </div>
   );
 }

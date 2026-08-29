@@ -23,7 +23,7 @@ import { SemesterProgress } from '../components/SemesterProgress';
 const PX_PER_MIN = 1.05;
 
 export function ScheduleView({ onAddCourse, onOpenAssignment }) {
-  const { courses } = useSemester();
+  const { courses, features } = useSemester();
   const { blocksOn, hasAnything } = useSchedule();
   const phone = useIsPhone();
   const now = useNow();
@@ -60,7 +60,7 @@ export function ScheduleView({ onAddCourse, onOpenAssignment }) {
 
   return (
     <>
-      <SemesterProgress />
+      {features.termProgress && <SemesterProgress />}
       {body}
     </>
   );
@@ -261,17 +261,24 @@ function WeekGrid({ week, now, onOpenAssignment }) {
                   {packColumns(d.blocks).map((b) => {
                     const c = courseColor(b.course?.color);
                     const event = b.type === 'event';
+                    // A class with a test in it is one block, not two — and it
+                    // is drawn the way the test used to be drawn, because the
+                    // reason exams were filled in rather than tinted has not
+                    // changed just because they moved onto the class.
+                    const carried = b.events ?? [];
+                    const exam = event ? b.event : (carried[0]?.event ?? null);
+                    const opens = event ? b.assignment : (carried[0]?.assignment ?? null);
                     const blockHeight = Math.max(22, (b.end - b.start) * PX_PER_MIN - 3);
                     const width = 100 / b.cols;
                     return (
                       <div
                         key={b.id}
                         onClick={
-                          event && onOpenAssignment ? () => onOpenAssignment(b.assignment) : undefined
+                          opens && onOpenAssignment ? () => onOpenAssignment(opens) : undefined
                         }
                         title={
-                          event
-                            ? `${kindLabel(b.event.kind)}: ${b.event.title} · ${fmtTimeRange(b.start, b.end)}`
+                          exam
+                            ? `${kindLabel(exam.kind)}: ${exam.title}${b.course ? ` · ${b.course.name}` : ''} · ${fmtTimeRange(b.start, b.end)}`
                             : `${b.course.name} · ${fmtTimeRange(b.start, b.end)}`
                         }
                         style={{
@@ -280,45 +287,49 @@ function WeekGrid({ week, now, onOpenAssignment }) {
                           width: `calc(${width}% - 6px)`,
                           top: (b.start - top) * PX_PER_MIN,
                           height: blockHeight,
-                          // An exam gets the course colour filled in rather than
-                          // tinted: on a grid of six pastel blocks, the one you
-                          // must not miss should be the one that isn't pastel.
-                          background: event ? c.solid : c.soft,
+                          // On a grid of six pastel blocks, the one you must not
+                          // miss should be the one that isn't pastel.
+                          background: exam ? c.solid : c.soft,
                           borderLeft: `3px solid ${c.solid}`,
                           borderRadius: 7,
                           padding: '5px 7px',
                           overflow: 'hidden',
-                          zIndex: event ? 3 : 2,
-                          cursor: event && onOpenAssignment ? 'pointer' : 'default',
+                          zIndex: exam ? 3 : 2,
+                          cursor: opens && onOpenAssignment ? 'pointer' : 'default',
                         }}
                       >
                         <div
                           style={{
                             font: `600 11.5px ${fonts.sans}`,
-                            color: event ? colors.onAccent : c.solid,
+                            color: exam ? colors.onAccent : c.solid,
                             whiteSpace: 'nowrap',
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
                           }}
                         >
-                          {event
-                            ? kindLabel(b.event.kind)
-                            : b.course.code || b.course.name}
+                          {/* The course stays the headline when the exam is in
+                              it — you are looking for the block you already know
+                              the shape of, and the kind is the line under it. A
+                              loose exam has no class to name, so it leads with
+                              what it is. */}
+                          {event ? kindLabel(exam.kind) : b.course.code || b.course.name}
                         </div>
                         {blockHeight > 38 && (
                           <div
                             style={{
                               font: `500 10.5px ${fonts.sans}`,
-                              color: event ? colors.onAccent : colors.muted2,
+                              color: exam ? colors.onAccent : colors.muted2,
                               marginTop: 2,
-                              opacity: event ? 0.85 : 1,
+                              opacity: exam ? 0.85 : 1,
                               whiteSpace: 'nowrap',
                               overflow: 'hidden',
                               textOverflow: 'ellipsis',
                             }}
                           >
-                            {event
-                              ? b.event.title
+                            {exam
+                              ? event
+                                ? exam.title
+                                : `${kindLabel(exam.kind)} · ${exam.title}`
                               : `${fmtMinutes(b.start)}${b.course.location ? ` · ${b.course.location}` : ''}`}
                           </div>
                         )}
@@ -437,7 +448,13 @@ function DayAgenda({ week, now, onOpenAssignment }) {
                   onOpen={onOpenAssignment ? () => onOpenAssignment(b.assignment) : undefined}
                 />
               ) : (
-                <ClassRow key={b.id} block={b} nowMinutes={nowMinutes} state={state} />
+                <ClassRow
+                  key={b.id}
+                  block={b}
+                  nowMinutes={nowMinutes}
+                  state={state}
+                  onOpenEvent={onOpenAssignment}
+                />
               );
             })}
           </>

@@ -27,7 +27,7 @@ import {
   ProgressBar,
   KindTag,
 } from '../components/ui';
-import { ClassRow, EventRow, BreakCard, RoomChip, classState } from '../components/ClassRow';
+import { ClassRow, EventRow, EventTag, BreakCard, RoomChip, classState } from '../components/ClassRow';
 import { PrimaryButton } from '../components/Modal';
 import { StudyCard } from '../components/StudyCard';
 import { StudyWeek } from '../components/StudyWeek';
@@ -37,6 +37,13 @@ import { SemesterStrip } from '../components/SemesterProgress';
 // do I need to be, what should I be doing with the next hour, what's coming at
 // me, and how am I doing. Anything that isn't one of those belongs on another
 // tab.
+//
+// Since 1.4, two of the four are optional. Not every semester is five classes
+// and a timetable, and not everyone wants a study timer — and the half of this
+// page that answers a question you never ask is the half you learn to scroll
+// past, which costs the other half its place at the top of the screen. What is
+// switched off is switched off here rather than rendered and hidden, so the grid
+// closes up around it instead of leaving the gap where it used to be.
 //
 // "Where do I need to be" gets the most room, because it's the one that's asked
 // while walking. It's answered twice on purpose: once as a single glanceable
@@ -52,7 +59,7 @@ import { SemesterStrip } from '../components/SemesterProgress';
 const DUE_SOON_DAYS = 5;
 
 export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssignment, onStartStudy }) {
-  const { courses, assignments, courseById } = useSemester();
+  const { courses, assignments, courseById, features } = useSemester();
   const termGrades = useTermGrades();
   const phone = useIsPhone();
   const now = useNow();
@@ -60,6 +67,7 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
   const { blocksOn } = useSchedule();
+  const timetable = features.schedule;
 
   // Today, as a date rather than a weekday — a break is a range on the calendar
   // and can only be checked against a real day.
@@ -100,7 +108,18 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
    * is done — so the night before a quiz, it was the headline *and* the
    * reminder underneath it.
    */
-  const heroBlock = current ?? next ?? upcoming?.blocks?.[0] ?? null;
+  const heroBlock = timetable ? (current ?? next ?? upcoming?.blocks?.[0] ?? null) : null;
+
+  // Every exam the card above is already showing, whether as the headline or as
+  // a tag on the class it happens in. The strip below asks this rather than
+  // comparing one id, because an exam can now reach the card two ways and
+  // checking only the first is what put the same quiz on screen twice before.
+  const heroExamIds = useMemo(() => {
+    const ids = new Set();
+    if (heroBlock?.event?.id) ids.add(heroBlock.event.id);
+    for (const e of heroBlock?.events ?? []) ids.add(e.event.id);
+    return ids;
+  }, [heroBlock]);
 
   // The day the list below shows: today while it still has anything on it,
   // otherwise the next day that does.
@@ -139,7 +158,7 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
   if (!courses.length) {
     return (
       <>
-        <Greeting now={now} phone={phone} navigate={navigate} />
+        <Greeting now={now} phone={phone} navigate={navigate} showTerm={features.termProgress} />
         <EmptyState
           title="Let's get your semester in"
           body="Add your courses — name, when they meet, and how they're graded — and this page fills itself in from there."
@@ -151,32 +170,35 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
 
   return (
     <>
-      <Greeting now={now} phone={phone} navigate={navigate} />
+      <Greeting now={now} phone={phone} navigate={navigate} showTerm={features.termProgress} />
 
-      <NextUp
-        block={heroBlock}
-        current={current}
-        next={next}
-        upcoming={upcoming}
-        off={today.off}
-        nowMinutes={nowMinutes}
-        blocksToday={today.blocks.length}
-        phone={phone}
-        onOpenEvent={onOpenAssignment}
-      />
+      {timetable && (
+        <NextUp
+          block={heroBlock}
+          current={current}
+          next={next}
+          upcoming={upcoming}
+          off={today.off}
+          nowMinutes={nowMinutes}
+          blocksToday={today.blocks.length}
+          phone={phone}
+          onOpenEvent={onOpenAssignment}
+        />
+      )}
 
       {/* Only worth its space once it's genuinely ahead of you and not already
           the thing filling the card above — whichever day that card reached
           into to find it. When it *is* the card above, the card itself opens
-          it, so nothing is lost by dropping the second copy. */}
-      {nextExam && nextExam.a.id !== heroBlock?.event?.id && (
+          it, so nothing is lost by dropping the second copy. With no timetable
+          there is no card above, and this becomes the only warning there is. */}
+      {nextExam && !heroExamIds.has(nextExam.a.id) && (
         <NextExam row={nextExam} course={courseById.get(nextExam.a.course_id)} onOpen={onOpenAssignment} />
       )}
 
       {/* Directly under where you have to be, because the two are the same
           decision: the gap between classes is the block, and the timetable is
           what decides how long it can be. */}
-      <StudyCard onChoose={onStartStudy} onOpenAssignment={onOpenAssignment} />
+      {features.study && <StudyCard onChoose={onStartStudy} onOpenAssignment={onOpenAssignment} />}
 
       <div
         style={{
@@ -192,7 +214,7 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
               and says why the day is empty — jumping the heading straight to
               "Monday" would answer a question nobody asked and hide the one
               they did. */}
-          {(today.off || shown) && (
+          {timetable && (today.off || shown) && (
             <section>
               <SectionHeading
                 action={
@@ -230,7 +252,13 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
                       onOpen={onOpenAssignment ? () => onOpenAssignment(b.assignment) : undefined}
                     />
                   ) : (
-                    <ClassRow key={b.id} block={b} nowMinutes={nowMinutes} state={state} />
+                    <ClassRow
+                      key={b.id}
+                      block={b}
+                      nowMinutes={nowMinutes}
+                      state={state}
+                      onOpenEvent={onOpenAssignment}
+                    />
                   );
                 })}
               </div>
@@ -318,7 +346,7 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
         {/* Hours first, grades second, which is the order they can be acted on:
             one of them is a decision about tonight and the other is a
             consequence of six weeks of them. */}
-        <StudyWeek />
+        {features.study && <StudyWeek />}
 
         <section style={{ minWidth: 0 }}>
           <SectionHeading
@@ -379,7 +407,7 @@ export function TodayView({ navigate, onAddCourse, onAddAssignment, onOpenAssign
 // reads on purpose — you look at it while the rest loads — and "further through
 // than you thought" is exactly the kind of thing that has to arrive uninvited
 // or not at all. It opens the schedule, where the full picture lives.
-function Greeting({ now, phone, navigate }) {
+function Greeting({ now, phone, navigate, showTerm = true }) {
   return (
     <div style={{ marginBottom: phone ? 14 : 20 }}>
       <div style={{ font: `400 ${phone ? 24 : 27}px ${fonts.serif}`, color: colors.ink }}>
@@ -388,7 +416,7 @@ function Greeting({ now, phone, navigate }) {
       <div style={{ font: `500 13px ${fonts.sans}`, color: colors.muted2, marginTop: 4 }}>
         {longDate(now)}
       </div>
-      <SemesterStrip onClick={navigate ? () => navigate('schedule') : undefined} />
+      {showTerm && <SemesterStrip onClick={navigate ? () => navigate('schedule') : undefined} />}
     </div>
   );
 }
@@ -419,22 +447,33 @@ function NextUp({ block, current, next, upcoming, off, nowMinutes, blocksToday, 
   const live = Boolean(current);
   const event = block.type === 'event';
 
+  // A quiz inside the class it belongs to reaches this card as a tag on the
+  // class rather than as the block itself, and the label has to know: "In class
+  // now" over a row carrying a midterm is technically true and exactly the wrong
+  // emphasis. So the kind is read from whichever of the two it arrived as.
+  const events = block.events ?? [];
+  const kind = event ? block.event.kind : (events[0]?.event.kind ?? null);
+
   // An exam says so in the label, because "Next · in 40m" over a course code is
   // the one case where knowing *what* it is matters more than knowing when.
   const label = live
-    ? event
-      ? `${kindLabel(block.event.kind)} in progress`
+    ? kind
+      ? `${kindLabel(kind)} in progress`
       : 'In class now'
     : next
-      ? `${event ? kindLabel(block.event.kind) : 'Next'} · in ${fmtDuration(block.start - nowMinutes)}`
-      : `Next ${event ? kindLabel(block.event.kind).toLowerCase() : 'class'} · ${upcoming.label}`;
+      ? `${kind ? kindLabel(kind) : 'Next'} · in ${fmtDuration(block.start - nowMinutes)}`
+      : `Next ${kind ? kindLabel(kind).toLowerCase() : 'class'} · ${upcoming.label}`;
 
   // An exam or quiz on this card is a row you might want to change — the time
   // moved, the name was a guess, it's worth more than you thought — and before
   // 1.1 the only way in was a second strip underneath saying the same thing.
-  // The headline opens it instead. A class isn't editable from here, so it
-  // stays a card rather than pretending to be a button.
-  const open = event && onOpenEvent && block.assignment ? () => onOpenEvent(block.assignment) : null;
+  // The headline opens it instead. A class with exactly one exam in it opens
+  // that exam too; a class with two goes through the tags, because a card that
+  // opens one of two things you can both see is a card that opens the wrong one
+  // half the time.
+  const only = !event && events.length === 1 ? events[0].assignment : null;
+  const target = event ? block.assignment : only;
+  const open = target && onOpenEvent ? () => onOpenEvent(target) : null;
 
   return (
     <HeroCard color={c} label={label} room={block.course?.location} phone={phone} onClick={open}>
@@ -468,6 +507,26 @@ function NextUp({ block, current, next, upcoming, off, nowMinutes, blocksToday, 
         {fmtTimeRange(block.start, block.end)}
         {live ? ` · ${fmtDuration(block.end - nowMinutes)} left` : ''}
       </div>
+
+      {/* Named, not just labelled: "Quiz · in 40m" over a course code doesn't
+          say which quiz, and by week ten there have been six.
+
+          The tags only take their own click when the card hasn't already taken
+          it. A single exam makes the whole card a button and the tag inside it
+          decoration — a button inside a button is invalid markup and behaves
+          differently in every browser that has to guess what it meant. */}
+      {events.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 9 }}>
+          {events.map((e) => (
+            <EventTag
+              key={e.id}
+              event={e.event}
+              color={c}
+              onClick={!open && onOpenEvent ? () => onOpenEvent(e.assignment) : undefined}
+            />
+          ))}
+        </div>
+      )}
     </HeroCard>
   );
 }

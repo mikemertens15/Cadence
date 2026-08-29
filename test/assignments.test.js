@@ -1,7 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { suggestCategory, suggestPoints, seriesTitles } from '../src/assignments.js';
+import {
+  suggestCategory,
+  suggestPoints,
+  seriesTitles,
+  meetingFor,
+  eventSlot,
+  meetsOn,
+} from '../src/assignments.js';
 
 // Filing work in the right bucket is the one piece of guessing this app does on
 // someone's behalf, and a wrong guess is a grade that is quietly wrong. So every
@@ -188,4 +195,86 @@ test('a title that already ends in a number counts on from there', () => {
 
 test('an empty title still produces usable rows', () => {
   assert.deepEqual(seriesTitles('  ', 2), ['Untitled 1', 'Untitled 2']);
+});
+
+// ------------------------------------------------ exams that happen in class
+//
+// The stored timestamp is still the truth about *when* — the whole app sorts by
+// it. What these decide is whether the exam is drawn as a thing of its own or as
+// something happening inside a class you were already going to.
+
+// Mon 5 Oct 2026 is a Monday; 7 Oct is the Wednesday.
+const MON = new Date(2026, 9, 5, 14, 0).toISOString();
+const WED = new Date(2026, 9, 7, 14, 0).toISOString();
+const SAT = new Date(2026, 9, 10, 8, 0).toISOString();
+
+// 0 = Monday, so a MWF course is 0, 2, 4.
+const meeting = (id, dow, start, end) => ({
+  id,
+  day_of_week: dow,
+  start_time: `${start}:00`,
+  end_time: `${end}:00`,
+});
+
+const MWF = [meeting('m1', 0, '14:00', '14:50'), meeting('m2', 2, '14:00', '14:50')];
+
+test('an exam on a day the class meets belongs to that meeting', () => {
+  assert.equal(meetingFor(MON, MWF).id, 'm1');
+  assert.equal(meetingFor(WED, MWF).id, 'm2');
+});
+
+test('an exam on a day the class does not meet belongs to nothing', () => {
+  assert.equal(meetingFor(SAT, MWF), null);
+  assert.equal(meetingFor(null, MWF), null);
+  assert.equal(meetingFor(MON, []), null);
+});
+
+test('a course with a lecture and a lab takes the nearer of the two', () => {
+  // Lecture at 9, lab at 2. Nudging the hour is how you say which one.
+  const both = [meeting('lec', 0, '09:00', '09:50'), meeting('lab', 0, '14:00', '16:50')];
+  assert.equal(meetingFor(new Date(2026, 9, 5, 9, 0).toISOString(), both).id, 'lec');
+  assert.equal(meetingFor(new Date(2026, 9, 5, 15, 0).toISOString(), both).id, 'lab');
+});
+
+test('an in-class exam is drawn at the class time, for the class length', () => {
+  const slot = eventSlot({ due_at: MON, at_class_time: true, duration_min: 50 }, MWF);
+  assert.equal(slot.start, 14 * 60);
+  assert.equal(slot.end, 14 * 60 + 50);
+  assert.equal(slot.meeting.id, 'm1');
+});
+
+test('an exam somewhere else keeps its own time and length', () => {
+  // A common final at 8am on a Saturday, two hours long.
+  const slot = eventSlot({ due_at: SAT, at_class_time: false, duration_min: 120 }, MWF);
+  assert.equal(slot.start, 8 * 60);
+  assert.equal(slot.end, 8 * 60 + 120);
+  assert.equal(slot.meeting, null);
+});
+
+test('marked in-class on a day the class stopped meeting, it still draws', () => {
+  // The flag says "whenever this meets", and this no longer does. A wrong hour
+  // on the right day beats an exam that vanishes.
+  const slot = eventSlot({ due_at: SAT, at_class_time: true }, MWF);
+  assert.equal(slot.start, 8 * 60);
+  assert.equal(slot.meeting, null);
+});
+
+test('an exam with no length at all gets a believable one', () => {
+  const slot = eventSlot({ due_at: SAT, at_class_time: false }, MWF);
+  assert.equal(slot.end - slot.start, 50);
+});
+
+test('the form can ask whether a course meets on a given date', () => {
+  assert.equal(meetsOn(MWF, '2026-10-05')[0].id, 'm1');
+  assert.equal(meetsOn(MWF, '2026-10-10'), null);
+  assert.equal(meetsOn([], '2026-10-05'), null);
+  assert.equal(meetsOn(MWF, ''), null);
+});
+
+test('two meetings on one day come back earliest first', () => {
+  const both = [meeting('lab', 0, '14:00', '16:50'), meeting('lec', 0, '09:00', '09:50')];
+  assert.deepEqual(
+    meetsOn(both, '2026-10-05').map((m) => m.id),
+    ['lec', 'lab'],
+  );
 });

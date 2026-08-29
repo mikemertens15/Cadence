@@ -6,6 +6,15 @@ import { Card } from './ui';
 // The rows a day is made of: classes, the exams sitting between them, and the
 // card that says a day has been cancelled out from under both.
 //
+// Since 1.4 most exams are none of those three. A quiz in the class it belongs
+// to is not another thing on a Tuesday — it is the Tuesday class, with something
+// happening in it — and giving it a row of its own put two entries on the screen
+// for one place you have to be, on the days already carrying the most. So it is
+// drawn on the class: a tag under the course name, in the course's colour,
+// opening the same editor the row used to. EventRow is still here and still
+// earns its keep for the exams that really are somewhere else — an 8am common
+// final in a building you have never been to.
+//
 // The layout is built around the two things you actually need while walking
 // across campus: when, and where. The time sits in a fixed left rail so a whole
 // day lines up into a readable column, and the room is a chip in its own right
@@ -73,11 +82,12 @@ function Rail({ start, end, done }) {
   );
 }
 
-export function ClassRow({ block, state = 'later', nowMinutes }) {
+export function ClassRow({ block, state = 'later', nowMinutes, onOpenEvent }) {
   const c = courseColor(block.course.color);
   const done = state === 'done';
   const now = state === 'now';
   const next = state === 'next';
+  const events = block.events ?? [];
 
   // The status line only earns its space when there's something time-sensitive
   // to say. A class at 3pm doesn't need a countdown at 9am.
@@ -94,7 +104,11 @@ export function ClassRow({ block, state = 'later', nowMinutes }) {
         display: 'flex',
         gap: 12,
         alignItems: 'stretch',
-        borderLeft: `4px solid ${now || next ? c.solid : 'transparent'}`,
+        // A class with a test in it gets the outline an exam row used to get.
+        // The point of moving the exam onto the class was to stop drawing two
+        // things; it was never to make the test quieter than it was.
+        border: events.length ? `1px solid ${c.solid}` : undefined,
+        borderLeft: `4px solid ${events.length || now || next ? c.solid : 'transparent'}`,
         background: now ? c.soft : colors.card,
         opacity: done ? 0.5 : 1,
       }}
@@ -132,6 +146,19 @@ export function ClassRow({ block, state = 'later', nowMinutes }) {
           {block.course.name}
         </div>
 
+        {events.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 7 }}>
+            {events.map((e) => (
+              <EventTag
+                key={e.id}
+                event={e.event}
+                color={c}
+                onClick={onOpenEvent ? () => onOpenEvent(e.assignment) : undefined}
+              />
+            ))}
+          </div>
+        )}
+
         {status && (
           <div style={{ font: `600 11px ${fonts.sans}`, color: c.solid, marginTop: 5 }}>
             {now ? 'NOW · ' : ''}
@@ -144,7 +171,80 @@ export function ClassRow({ block, state = 'later', nowMinutes }) {
 }
 
 /**
+ * The exam, on the class it happens in.
+ *
+ * Filled rather than outlined, because on a row that is otherwise all greys and
+ * one colour of text, the thing you must not walk into unprepared should be the
+ * one shape that is solid. Tapping it opens the same editor as everywhere else,
+ * so a score can go in the moment you walk out — which was the one thing the
+ * separate row was still good for.
+ */
+export function EventTag({ event, color, onClick }) {
+  return (
+    <span
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        // Both halves of the same rule. A flex item won't shrink below its own
+        // content without min-width, so an exam somebody named in a whole
+        // sentence would otherwise push the tag straight out of the card.
+        maxWidth: '100%',
+        minWidth: 0,
+        padding: '4px 9px',
+        borderRadius: 8,
+        background: color.solid,
+        cursor: onClick ? 'pointer' : 'default',
+      }}
+    >
+      <span
+        style={{
+          font: `700 9.5px ${fonts.sans}`,
+          letterSpacing: '0.08em',
+          textTransform: 'uppercase',
+          color: colors.onAccent,
+          opacity: 0.85,
+          flexShrink: 0,
+        }}
+      >
+        {kindLabel(event.kind)}
+      </span>
+      <span
+        style={{
+          font: `600 11.5px ${fonts.sans}`,
+          color: colors.onAccent,
+          minWidth: 0,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {event.title}
+      </span>
+    </span>
+  );
+}
+
+/**
  * An exam, in the same rail as the classes around it.
+ *
+ * For the ones that are genuinely their own appointment: a common final in
+ * another building, a make-up sat on a Saturday, anything on a day the class
+ * doesn't meet. An exam inside its own class is drawn on the class instead —
+ * see EventTag above.
  *
  * It gets a heavier border and the kind spelled out because it is categorically
  * not another lecture — the thing you want on a Tuesday morning is to see at a

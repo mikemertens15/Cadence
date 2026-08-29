@@ -35,8 +35,10 @@ export function toBackupJson(rows) {
       exported_at: new Date().toISOString(),
       // Named so a future importer can tell a 0.3 backup (no programs, no
       // grading basis) from a 1.0 one without guessing from the shape. 4 adds
-      // study_sessions and the weekly target on a course.
-      schema: 4,
+      // study_sessions and the weekly target on a course; 5 adds user_prefs,
+      // how many items a category expects and how it is scored, and whether an
+      // exam happens at its class's time.
+      schema: 5,
       tables: rows,
     },
     null,

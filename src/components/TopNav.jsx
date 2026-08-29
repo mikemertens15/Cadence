@@ -1,5 +1,5 @@
 import { colors, fonts, shadows } from '../theme';
-import { NAV_ITEMS, navSection } from '../nav';
+import { navItemsFor, navSection } from '../nav';
 import { Mark } from '../auth/SignIn';
 import { VersionChip } from './VersionChip';
 import { useSemester } from '../data/SemesterProvider';
@@ -7,7 +7,7 @@ import { useSemester } from '../data/SemesterProvider';
 // Desktop chrome: brand, destinations, term switcher, and the one button that
 // matters everywhere — add.
 export function TopNav({ view, setView, onAdd, onOpenSettings }) {
-  const { terms, activeTerm, setTermId } = useSemester();
+  const { terms, activeTerm, setTermId, features } = useSemester();
   const section = navSection(view);
 
   return (
@@ -41,7 +41,7 @@ export function TopNav({ view, setView, onAdd, onOpenSettings }) {
         </div>
 
         <nav style={{ display: 'flex', gap: 2, marginLeft: 8 }}>
-          {NAV_ITEMS.map(([key, label]) => {
+          {navItemsFor(features).map(([key, label]) => {
             const active = section === key;
             return (
               <button

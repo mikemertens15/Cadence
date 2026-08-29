@@ -87,8 +87,11 @@ The schema lives in [`supabase/migrations/`](supabase/migrations/) — `0001_ini
 for the core tables, `0002_exams_history_breaks.sql` for exams, past semesters,
 the degree goal and days off, `0003_programs_practice_work_and_basis.sql`
 for work that isn't graded, how a course is scored, and the several things a
-person is actually working toward, and `0004_study_sessions.sql` for the hours
-you put in and how many of them each class was meant to get.
+person is actually working toward, `0004_study_sessions.sql` for the hours
+you put in and how many of them each class was meant to get, and
+`0005_prefs_counts_and_class_events.sql` for which parts of the app you want,
+how many items a category is going to hold, whether it is scored or just
+attended, and exams that happen at their class's time.
 Every table is behind RLS with one policy shape — `user_id = auth.uid()` — so
 the publishable key in the browser bundle can't reach anyone else's rows.
 
@@ -108,14 +111,22 @@ Three rules decide everything:
 2. **Only categories with at least one graded item count**, and their weights
    re-normalize to fill the gap. In week two, 92% on homework means your grade
    is 92% — not 18.4% of a semester you haven't taken yet.
-3. **Drop-lowest applies to whatever is graded right now**, by percentage rather
-   than raw points, and never empties a category — see the comment on
-   `applyDrops` for why keeping one score is the stable choice.
+3. **Drop-lowest waits until it can't land anywhere else**, and applies by
+   percentage rather than raw points. A drop is a rule about the *finished*
+   category, so spending it on the worst of the three quizzes written so far is
+   spending it on a guess — and always in the flattering direction. See
+   `applyDrops`, and *How many of these there are going to be* below.
 
 The **needed-score solver** bisects rather than solving algebraically. The closed
 form looks tractable until drop-lowest enters it: which assignments get dropped
 depends on the score you're solving for, so the curve is piecewise. It is
 monotonic, though, and that's all bisection needs.
+
+**Extra credit** is a row worth zero that you scored on: five bonus points is
+`points_possible = 0` and `points_earned = 5`, which is exactly what a professor
+adds to the top of the fraction and not to the bottom. It is never a candidate
+for being dropped, because dropping your extra credit isn't a thing any syllabus
+means. An *unscored* zero-point row is still nothing at all.
 
 GPA is a straight 4.0 scale with no +/- weighting (Tennessee Tech's actual
 scale), computed from where each course stands *now* — courses with no graded
@@ -160,6 +171,60 @@ as not graded rather than file it somewhere it will dilute an exam average. The
 form says which of the four happened, because a guess nobody can see is a guess
 nobody can correct.
 
+## How many of these there are going to be
+
+"Quizzes 20%, seven of them, lowest two dropped" is a sentence a syllabus
+prints, and until 1.4 the schema could hold the 20% and the two but not the
+seven — which is the one that makes the other two mean anything. Two things were
+wrong without it, both in the flattering direction.
+
+**Drops were spent before they were yours.** Two graded quizzes and "drop the
+lowest two" kept your better one and called that the category: a 60 and a 90
+reading as 90 in week three. The fix needs the total. A drop is only *yours*
+once no score still to come could absorb it instead, so `applyDrops` takes a
+`toCome` — rows entered but not yet marked, plus the ones the syllabus promises
+that nobody has written down — and applies `n - toCome` of them. Seven quizzes,
+lowest two dropped: none at three graded, one at six, both at seven. The ones
+waiting come back as `dropsHeld` and are said out loud on the page, because a
+category reading lower than expected needs a reason attached to it rather than
+an argument.
+
+**Forecasts covered the wrong term.** "What do I need on the work that's left"
+answers over the rows you have entered, and four quizzes nobody has typed in are
+four rows the solver believes don't exist — so it reported a term nearly settled
+when a fifth of it hadn't happened. `unenteredItems()` puts them back, each
+worth what the others in its category are worth: the mode rather than the mean,
+because one 200-point makeup shouldn't redefine what a quiz is.
+
+`expected_count` is nullable, and null is the honest answer for most categories —
+"homework is 10%, however many he sets". The app then *says* that every number
+below it assumes what's entered is all of it, rather than implying it knows
+better. That sentence is the point; an assumption stated is one you can correct.
+
+None of this can move the grade you already have. Counts decide which drops have
+landed and how much of the term a forecast covers; the average is over graded
+work exactly as it always was.
+
+## Marks for turning up
+
+A 30% attendance weight, earned by in-class activities nobody checks for
+correctness, is not a score. Entering "20 out of 20" thirty times is tedious,
+and it is also a small lie about what was measured, because nothing was.
+
+`grading_categories.credit_basis` is `score` or `completion`. A completion
+category writes full marks or a zero and offers **Here / Missed** instead of a
+number box — on the work list and the grades page both, because the moment you
+mark one is on the way out of the room. Three states, not two: blank is "hasn't
+happened yet", and a missed class is a real zero that has to stay
+distinguishable from a Thursday that hasn't come round.
+
+Deliberately on the category rather than the assignment. It is one fact about
+how a professor grades that bucket, stated once on a syllabus, and putting it on
+each row would ask the same question thirty times. Which leaves the thirty rows
+themselves — so the assignment form will make one per class meeting to the end
+of term, with the days off already taken out, since there is no class on
+Thanksgiving and therefore nothing to turn up to.
+
 ## Exams are not assignments
 
 A problem set is due *by* a moment — hand it in at 11:58pm and you're fine. A
@@ -175,6 +240,58 @@ in Overdue in red implying you failed to hand in a test you turned up for.
 Everything else about the two is identical — both are worth points, both live in
 a weighted category, both feed the same grade — which is why it's a column and
 not a second table. See [`src/assignments.js`](src/assignments.js).
+
+### Most of them happen in class
+
+A dynamics exam is not a place you go. It is the dynamics class, on a Tuesday,
+doing something different — same room, same hour, same fifty minutes — and being
+asked to type that hour in is being asked for a fact the app has had since the
+course was entered.
+
+`assignments.at_class_time` means *whenever this class meets that day*, and it
+changes two things.
+
+**The form stops asking.** Pick a date; if the course meets on it, the exam
+takes the meeting's start and the meeting's length. "Another time" is one tap
+away for the ones that really are somewhere else — a common final at 8am on a
+Saturday in a building you've never been to. A course with a lecture and a lab
+on the same day offers both, resolved by nearest start, so nudging the hour is
+how you say which.
+
+**It stops being a second thing on your Tuesday.** It used to get its own block
+on the grid and its own row on the day list, so the days already carrying five
+classes were exactly the days this doubled. Now it is drawn *on* the class — the
+same block, filled in rather than tinted, with the exam named on it — and only a
+genuinely separate appointment gets a row of its own. `blocksOn()` in
+[`src/data/schedule.js`](src/data/schedule.js) does the attaching, and it builds
+every exam as a full block *as well as* tagging it with a meeting, because the
+same exam has to be drawable both ways: one that can only render attached is one
+that vanishes the week its class is cancelled.
+
+The stored `due_at` is still a real instant — everything that sorts a work list
+or counts the days to a midterm reads it and is untouched. The flag is what lets
+`setMeetings` re-stamp it when the class moves, keeping the day and taking the
+new hour off the timetable. Move a class from 8am to 9am and its exams follow.
+
+## Hours, not times
+
+No syllabus has ever said 11:47. It says midnight, or before class, or five
+o'clock — so the minute half of a time picker was a field that existed to be
+left alone, and on a phone it was two extra taps and a scroll wheel on every
+assignment anyone ever entered.
+
+Due times are hours, with end-of-day at the top of the list because that is what
+most work is due at. `HOUR_OPTIONS` in [`src/dates.js`](src/dates.js) — and
+end-of-day is 11:59pm rather than midnight, which is a different moment: work
+"due midnight Friday" filed at 00:00 is overdue for the whole of Friday.
+
+A time already stored off the hour — an 11:30 typed in before this, or a class
+that starts at twenty past — keeps its own entry in the list rather than being
+snapped to the nearest. Quietly moving a deadline somebody set is a worse
+failure than an odd-looking dropdown.
+
+The column is unchanged. `due_at` is still a timestamp; this is a question about
+what the form asks for.
 
 ## History, and the several things you're working toward
 
@@ -317,6 +434,80 @@ ignored inside a fortnight. `courses.weekly_study_minutes` is null for almost
 everyone; it exists so you can disagree after a week of watching the real
 numbers.
 
+## Only the parts you want
+
+Five people are using this now, and they are not running the same semester. One
+wants the study timer, one wants the timetable, and one genuinely only wants to
+know what his grade is — which is a real way to use this, and was the worst way
+to use it. Five things competed for the top of Today, four of them were only
+worth their space to some of the people looking at it, and the half of a page
+that answers a question you never ask is the half you learn to scroll past. The
+thing you actually came for is underneath it.
+
+So the timetable, deep study, degree progress and the semester bar each switch
+off, with a "Just grades" preset for the case where the answer is all four.
+[`src/features.js`](src/features.js) holds the list and the defaults — every one
+of them on, because somebody arriving at a new app has no basis for choosing and
+should turn off what they don't use rather than go hunting for what they do.
+
+Two things the panel says out loud rather than leaving to be discovered:
+
+- **Nothing is deleted.** Hours logged, meeting times, programs — a switch hides
+  screens and leaves every row where it is. A settings screen that can destroy
+  data by being tapped is one people are right to be afraid of.
+- **Some things go with others.** Turning off the timetable is not one fewer
+  tab: the whole "where do I need to be" half of Today is built out of meeting
+  times. Better to say so before the tap than to leave someone working out why
+  their home screen changed shape.
+
+Stored as a jsonb patch holding only the keys that *disagree* with the default,
+so a feature added later arrives on for everyone who never had an opinion about
+it, and a feature removed leaves a key nobody reads rather than a column nobody
+drops. In the database rather than localStorage for the same reason the term
+choice is: turning the timer off on the laptop and finding it still on the phone
+is worse than not offering the switch.
+
+Routes are guarded too. A hash left in the address bar from before the switch
+was flipped resolves to Today rather than rendering an empty screen — see
+`navAvailable` in [`src/nav.js`](src/nav.js).
+
+## Testing something on yourself first
+
+Friends are using this, which makes "deploy and see" a thing that happens to
+other people's semesters.
+
+`user_prefs.channel` is `stable` or `beta`. Work that is finished but not yet
+general goes in the `BETA` map in [`src/features.js`](src/features.js), keyed by
+capability; an account on `beta` sees it and everyone else doesn't. **Giving the
+green light is deleting the line.** No second build, no flag file, no migration —
+push updates exactly the way you always did, and the channel decides what the
+thing you pushed shows you.
+
+What belongs behind it is a whole new surface: a panel, a control, a new kind of
+thing you can make — something with an edge you can draw around, where hiding it
+leaves the app it was before rather than half of one. What doesn't is a rewrite
+of something that already exists. Gating "the due time is an hour now" means
+shipping and maintaining both pickers, and two code paths through one form is a
+far more expensive way to be careful than reading the diff was. Those ship to
+everyone, and the safety net for them is the one that has always applied.
+
+That safety net is the important half, and it isn't the channel: **every
+migration is additive.** A stable client reads rows written by a beta one,
+because the columns it has never heard of are ones it never selects by name.
+That is a property of the schema rather than of a switch — which is just as
+well, because the switch is not a secret. It sits in Settings where a friend
+could find it, and for a beta among five people that is the right trade against
+an allow-list of email addresses baked into a public bundle.
+
+One deployment detail follows from the table existing at all: the bundle goes
+out when it builds and the migration goes out when a person runs it, and those
+are not the same event. `user_prefs` is therefore the one table in `TABLES`
+marked optional — a failed read of it falls back to the defaults instead of
+taking down an app that can draw every screen it has. The list is deliberately
+one entry long. A failed read of `assignments` is not a semester with no work in
+it, and rendering one would be the same mistake this provider spends a paragraph
+avoiding elsewhere.
+
 ## Getting your data back out
 
 A year of scores living behind someone else's login with no way to take a copy
@@ -384,14 +575,17 @@ OS killed while the phone was in a pocket comes back empty and confident.
 ```
 src/
   grading/       engine.js (the math), scale.js (letters + grade points)
-  data/          SemesterProvider.jsx (all eleven tables), grades.js (engine ↔ app),
+  data/          SemesterProvider.jsx (all twelve tables), grades.js (engine ↔ app),
                  schedule.js (what's on a given date), study.js (hours ↔ app),
                  term.js (the semester, measured), backup.js (getting it out)
   auth/          Supabase session, sign-in, password reset
   views/         TodayView, ScheduleView, WorkView, GradesView, CoursesView
   components/    modals, nav, shared UI
-  assignments.js what kind of thing a piece of work is, and where it's filed
+  assignments.js what kind of thing a piece of work is, where it's filed, and
+                 which class an exam happens inside
   courses.js     how a course is scored, and whether you're still in it
+  features.js    which parts of the app you want, and which parts exist yet
+  nav.js         the destinations, and which of them this account has
   programs.js    what you're working toward, of which there is rarely one
   study.js       where the hours went, and which class needs the next one
   term.js        how far through the semester you are, and what's left of it
@@ -410,6 +604,15 @@ Two deliberate departures from Tend worth knowing about:
 
 ## Not built yet
 
+- **A final that replaces your lowest exam.** Common, and genuinely harder than
+  drop-lowest: the replacement is conditional on a score that doesn't exist yet,
+  which makes the needed-score curve non-monotonic and breaks the one property
+  bisection depends on.
+- **Late penalties, curves, and a category cap.** All three are a professor
+  applying an adjustment the app can't see, and a grade that silently differs
+  from the gradebook is worse than one you know you have to check.
+- **Rounding at a letter cutoff.** Whether 89.5 is an A is a per-professor fact
+  and already expressible: move the cutoff on the course's own scale.
 - Push notifications (in-app due-soon badges cover the MVP)
 - Offline editing. The service worker gets the shell open without a signal;
   queuing writes and reconciling them against realtime is a much bigger promise
@@ -419,6 +622,11 @@ Two deliberate departures from Tend worth knowing about:
 - Study history past the current week. Every block is stored, so the rows are
   there — what's missing is the screen, and "how did October go" is a question
   worth answering only once there's an October to answer it about.
+
+Recurring breaks are still on that list, and are now the thing standing between
+"one row per class meeting" and a run of attendance rows that is right without
+being checked — a break entered after the batch was made won't retire the rows
+it covers.
 
 Drop-lowest was specified as Phase 3 but is implemented — it's part of what
 makes the grade correct, so it belongs in the engine rather than bolted on. The

@@ -17,11 +17,12 @@ import { letterFor, gradePoints, DEFAULT_SCALE, PLUS_MINUS_SCALE, scaleFor } fro
 // expected value below is computed by hand in the comment above it, so a failure
 // tells you which rule broke rather than just that a number moved.
 
-const cat = (id, name, weight, drop = 0) => ({
+const cat = (id, name, weight, drop = 0, extra = {}) => ({
   id,
   name,
   weight_pct: weight,
   drop_lowest_n: drop,
+  ...extra,
 });
 
 const item = (id, categoryId, possible, earned = null, extra = {}) => ({
@@ -703,4 +704,213 @@ test('a pass/fail course is not given a letter to hit', () => {
   assert.equal(plan.courses.length, 1);
   assert.equal(plan.courses[0].id, 'a');
   assert.equal(plan.excluded, 1);
+});
+
+// ------------------------------------------- how many of these there will be
+
+test('a drop is held back while a score still to come could take it', () => {
+  // Quizzes 100%, seven of them, lowest two dropped.
+  //
+  //   3 graded (50, 60, 90) — four still to come, so neither drop is spent yet:
+  //     200/300 = 66.67%
+  //   6 graded (+90, 90, 90) — one still to come, so exactly one drop must land
+  //     on what's here: the 50 goes, 420/500 = 84%
+  //   7 graded (+90) — both drops land: 50 and 60 go, 450/500 = 90%
+  const quizzes = [cat('q', 'Quizzes', 100, 2, { expected_count: 7 })];
+  const scored = [50, 60, 90, 90, 90, 90, 90];
+  const at = (n) =>
+    gradeCourse({
+      categories: quizzes,
+      assignments: scored.slice(0, n).map((v, i) => item(`q${i}`, 'q', 100, v)),
+    });
+
+  close(at(3).pct, (200 / 300) * 100);
+  assert.equal(at(3).categories[0].dropsHeld, 2);
+  assert.deepEqual(at(3).categories[0].droppedKeys, []);
+
+  close(at(6).pct, 84);
+  assert.equal(at(6).categories[0].dropsHeld, 1);
+  assert.deepEqual(at(6).categories[0].droppedKeys, ['q0']);
+
+  close(at(7).pct, 90);
+  assert.equal(at(7).categories[0].dropsHeld, 0);
+  assert.deepEqual(at(7).categories[0].droppedKeys.sort(), ['q0', 'q1']);
+});
+
+test('a drop held because dropping would empty the category is still counted', () => {
+  // "Drop your lowest two" with two graded and nothing else coming: one goes,
+  // and the other is reported as waiting rather than as spent. The category is
+  // never blanked out of the grade entirely — see applyDrops.
+  const g = gradeCourse({
+    categories: [cat('q', 'Quizzes', 100, 2)],
+    assignments: [item('q1', 'q', 100, 60), item('q2', 'q', 100, 90)],
+  });
+  close(g.pct, 90);
+  assert.equal(g.categories[0].droppedKeys.length, 1);
+  assert.equal(g.categories[0].dropsHeld, 1);
+});
+
+test('a category with no drops has none waiting', () => {
+  const g = gradeCourse({
+    categories: [cat('h', 'Homework', 100)],
+    assignments: [item('h1', 'h', 100, 90)],
+  });
+  assert.equal(g.categories[0].dropsHeld, 0);
+});
+
+test('an assignment already entered but not yet marked can absorb a drop too', () => {
+  // No count from the syllabus, but two of the four quizzes are typed in and
+  // ungraded — either could turn out to be the one dropped, so the 60 stays:
+  // 150/200 = 75%, not the 90% dropping it now would show.
+  const g = gradeCourse({
+    categories: [cat('q', 'Quizzes', 100, 1)],
+    assignments: [
+      item('q1', 'q', 100, 60),
+      item('q2', 'q', 100, 90),
+      item('q3', 'q', 100),
+      item('q4', 'q', 100),
+    ],
+  });
+  close(g.pct, 75);
+  assert.equal(g.categories[0].dropsHeld, 1);
+});
+
+test('a stated count cannot move a grade on its own', () => {
+  // Same two scores, same category, one of them expecting five more items. The
+  // grade is over what has been graded either way — counts decide drops and
+  // forecasts, never the number on the page today.
+  const assignments = [item('h1', 'h', 100, 80), item('h2', 'h', 100, 90)];
+  const plain = gradeCourse({ categories: [cat('h', 'Homework', 100)], assignments });
+  const counted = gradeCourse({
+    categories: [cat('h', 'Homework', 100, 0, { expected_count: 7 })],
+    assignments,
+  });
+  close(plain.pct, 85);
+  close(counted.pct, 85);
+  assert.equal(counted.categories[0].unenteredCount, 5);
+  assert.equal(counted.unenteredCount, 5);
+});
+
+test('the forecast includes the work nobody has written down yet', () => {
+  // Quizzes 100%, four of them, one graded at 100/100.
+  //   bomb the rest:  100/400 = 25%
+  //   ace the rest:   400/400 = 100%
+  // Without the count the app would report both as 100 and call the term over.
+  const model = {
+    categories: [cat('q', 'Quizzes', 100, 0, { expected_count: 4 })],
+    assignments: [item('q1', 'q', 100, 100)],
+  };
+  const r = neededOnRemaining(model, 90);
+  close(r.floor, 25);
+  close(r.ceiling, 100);
+  assert.equal(r.unenteredCount, 3);
+  assert.equal(r.unenteredPossible, 300);
+  // (100 + 300x)/400 = 90 → x = 0.8666… → 86.7%
+  assert.equal(r.needed, 86.7);
+
+  const blind = neededOnRemaining(
+    { categories: [cat('q', 'Quizzes', 100)], assignments: model.assignments },
+    90,
+  );
+  assert.equal(blind.status, 'no-remaining');
+  close(blind.floor, 100);
+});
+
+test('an unentered item is worth what the others in its category are worth', () => {
+  // Three 20-point quizzes entered, five expected. The two missing are 20-point
+  // quizzes, not 100-point ones: ace everything and you finish at 100%, which
+  // only holds if the projected items match the real ones.
+  const r = neededOnRemaining(
+    {
+      categories: [cat('q', 'Quizzes', 100, 0, { expected_count: 5 })],
+      assignments: [item('q1', 'q', 20, 10), item('q2', 'q', 20, 20), item('q3', 'q', 20, 20)],
+    },
+    90,
+  );
+  assert.equal(r.unenteredPossible, 40);
+  // (50 + 40x)/100 = 90 → x = 1.0 → 100%
+  assert.equal(r.needed, 100);
+});
+
+test('a term is not over just because the typing is behind', () => {
+  // Everything entered has a score, so the old answer was "nothing left". The
+  // syllabus says three more are coming.
+  const r = neededOnRemaining(
+    {
+      categories: [cat('q', 'Quizzes', 100, 0, { expected_count: 4 })],
+      assignments: [item('q1', 'q', 100, 100)],
+    },
+    90,
+  );
+  assert.equal(r.status, 'reachable');
+  assert.notEqual(r.status, 'no-remaining');
+});
+
+test('categories that never said how many are named, so the assumption is visible', () => {
+  const g = gradeCourse({
+    categories: [
+      cat('h', 'Homework', 40),
+      cat('q', 'Quizzes', 30, 0, { expected_count: 7 }),
+      cat('z', 'Nothing', 0),
+    ],
+    assignments: [item('h1', 'h', 100, 90)],
+  });
+  assert.deepEqual(g.unstated, [{ id: 'h', name: 'Homework' }]);
+});
+
+test('how a category is scored travels with it, and defaults to points', () => {
+  const g = gradeCourse({
+    categories: [cat('a', 'Attendance', 30, 0, { credit_basis: 'completion' }), cat('h', 'HW', 70)],
+    assignments: [item('a1', 'a', 1, 1)],
+  });
+  assert.equal(g.categories[0].creditBasis, 'completion');
+  assert.equal(g.categories[1].creditBasis, 'score');
+});
+
+// -------------------------------------------------------------- extra credit
+
+test('extra credit adds points with no denominator to add to', () => {
+  // 45/50 plus five bonus points: 50/50 = 100%.
+  const g = gradeCourse({
+    categories: [cat('h', 'Homework', 100)],
+    assignments: [item('h1', 'h', 50, 45), item('bonus', 'h', 0, 5)],
+  });
+  close(g.pct, 100);
+  assert.equal(g.categories[0].gradedCount, 2);
+});
+
+test('an unscored zero-point row is still nothing at all', () => {
+  const g = gradeCourse({
+    categories: [cat('h', 'Homework', 100)],
+    assignments: [item('h1', 'h', 50, 45), item('empty', 'h', 0)],
+  });
+  close(g.pct, 90);
+  assert.equal(g.categories[0].gradedCount, 1);
+  // Nor is it work still ahead of you — there is nothing there to score.
+  assert.equal(g.remainingCount, 0);
+});
+
+test('extra credit is never the score that gets dropped', () => {
+  // Drop the lowest of {40%, 90%} and five bonus points. The 40 goes; the bonus
+  // is not a bad score, it is points.
+  const g = gradeCourse({
+    categories: [cat('h', 'Homework', 100, 1)],
+    assignments: [item('h1', 'h', 100, 40), item('h2', 'h', 100, 90), item('b', 'h', 0, 5)],
+  });
+  close(g.pct, 95);
+  assert.deepEqual(g.categories[0].droppedKeys, ['h1']);
+});
+
+test('the forecast counts extra credit the same way the live grade does', () => {
+  // HW 100%: 5 bonus points banked, one 100-pointer left. Ace it → 105/100.
+  const r = neededOnRemaining(
+    {
+      categories: [cat('h', 'Homework', 100)],
+      assignments: [item('b', 'h', 0, 5), item('h1', 'h', 100)],
+    },
+    100,
+  );
+  close(r.ceiling, 105);
+  // 100 needed out of a possible 105: (5 + 100x)/100 = 100 → x = 0.95
+  assert.equal(r.needed, 95);
 });

@@ -15,16 +15,18 @@ import {
 import { ModalShell, Field, Chip, inputStyle, PrimaryButton, GhostButton } from './Modal';
 import { BreaksPanel } from './BreaksPanel';
 import { DegreePanel } from './DegreePanel';
+import { FeaturesPanel } from './FeaturesPanel';
 
 // Everything that isn't day-to-day: which term you're looking at and the days
-// off inside it, the degree it all adds up to, how the app looks, and the
-// account behind it. One modal rather than a settings tab — none of it is
-// visited often enough to earn a permanent slot in the nav, and four tabs of
-// once-a-semester setup would be four tabs you scroll past every day.
+// off inside it, which parts of the app you want at all, the degree it all adds
+// up to, how it looks, and the account behind it. One modal rather than a
+// settings tab — none of it is visited often enough to earn a permanent slot in
+// the nav, and five tabs of once-a-semester setup would be five tabs you scroll
+// past every day.
 export function SettingsModal({ onClose, phone, startOn = 'terms' }) {
   const { mode, setMode } = useTheme();
   const { session, setPassword, signOut } = useAuth();
-  const { terms, activeTerm, setTermId, createTerm, deleteTerm, rawRows } = useSemester();
+  const { terms, activeTerm, setTermId, createTerm, deleteTerm, rawRows, features } = useSemester();
 
   const [tab, setTab] = useState(startOn);
   const [adding, setAdding] = useState(false);
@@ -75,8 +77,15 @@ export function SettingsModal({ onClose, phone, startOn = 'terms' }) {
         <Chip active={tab === 'terms'} onClick={() => setTab('terms')}>
           Terms
         </Chip>
-        <Chip active={tab === 'degree'} onClick={() => setTab('degree')}>
-          Degree
+        {/* The tab for a thing that is switched off is a tab that leads to a
+            panel about a thing that is switched off. */}
+        {features.degree && (
+          <Chip active={tab === 'degree'} onClick={() => setTab('degree')}>
+            Degree
+          </Chip>
+        )}
+        <Chip active={tab === 'features'} onClick={() => setTab('features')}>
+          Features
         </Chip>
         <Chip active={tab === 'look'} onClick={() => setTab('look')}>
           Appearance
@@ -181,7 +190,12 @@ export function SettingsModal({ onClose, phone, startOn = 'terms' }) {
         </>
       )}
 
-      {tab === 'degree' && <DegreePanel />}
+      {/* Reachable by its tab, and also from the grades page — which can only
+          send you here while the feature is on, so the second test is about a
+          switch flipped in one window with this modal open in another. */}
+      {tab === 'degree' && features.degree && <DegreePanel />}
+
+      {tab === 'features' && <FeaturesPanel />}
 
       {tab === 'look' && (
         <Field label="Theme" hint="System follows your phone or laptop">

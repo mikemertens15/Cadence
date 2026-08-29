@@ -8,6 +8,49 @@
 
 export const RELEASES = [
   {
+    version: '1.4.0',
+    date: '2026-08-29',
+    name: 'Only the parts you want',
+    notes: [
+      [
+        'added',
+        'Switches for the parts of the app you don\u2019t use. Study sessions, the timetable, degree progress and the semester bar can each be turned off, and there is a \u201cJust grades\u201d button for the case where the answer is all of them \u2014 which is a real way to use this. Five things were competing for the top of Today and four of them were only worth their space to some of the people looking at it, which is how you learn to scroll past the place your grade lives. Nothing is deleted by a switch: hours already logged, meeting times and programs all stay exactly where they are and come back the moment you switch it on again. Settings \u2192 Features.',
+      ],
+      [
+        'changed',
+        'A quiz in the class it happens in is no longer a second thing on your Tuesday. It is drawn on the class \u2014 same block, same row, with the exam named on it in the course\u2019s colour \u2014 because a dynamics exam is not a place you go, it is dynamics doing something different. The days that had the most on them were the days this doubled, which is exactly backwards. An exam that genuinely is somewhere else, like an 8am common final in a building you have never been to, still gets its own block.',
+      ],
+      [
+        'changed',
+        'Entering an exam stopped asking what time it is. Pick the date, and if the class meets that day it takes the class\u2019s hour and the class\u2019s fifty minutes \u2014 both facts the app has had since you entered the course. \u201cAnother time\u201d is one tap away for the ones that are. Move the class later in the term and the exams marked as in-class move with it, rather than sitting at an hour nobody meets at any more.',
+      ],
+      [
+        'changed',
+        'Due times are hours now. No syllabus has ever said 11:47 \u2014 it says midnight, or before class, or five o\u2019clock \u2014 so the minutes half of that picker was a field that existed to be left alone, and on a phone it was two extra taps every single time. Anything already set to something off the hour keeps it exactly as it was.',
+      ],
+      [
+        'added',
+        'How many there are going to be. \u201cQuizzes 20%, seven of them, lowest two dropped\u201d is a sentence a syllabus prints, and until now the app could hold the 20% and the two but not the seven \u2014 which is the one that makes the other two mean anything. With it, \u201cwhat do I need on what\u2019s left\u201d counts the four quizzes nobody has written down yet, instead of reporting a term that is nearly settled when a fifth of it hasn\u2019t happened. Leave it blank and nothing changes, except that the forecast now says out loud that it is assuming what you have entered is all of it.',
+      ],
+      [
+        'fixed',
+        'A dropped quiz being spent before it was yours. \u201cDrop your lowest two\u201d against two graded quizzes used to keep your better one and call that the category \u2014 a 60 and a 90 reading as 90 in week three. A drop now waits until no score still to come could take it instead: with seven expected it drops none at three graded, one at six, and both at seven. Your grade in a drop category may read lower than it did, and the lower number is the true one. The page says how many drops are still waiting so it isn\u2019t a mystery.',
+      ],
+      [
+        'added',
+        'Marks for turning up. A 30% attendance weight earned by in-class work nobody checks for correctness is not a score, and typing \u201c20 out of 20\u201d thirty times is both tedious and a small lie about what was measured. A category can now be graded on turning up: rows in it get Here and Missed instead of a number box, on the work list and the grades page both. And since it is one row per class meeting, the assignment form will make all of them at once \u2014 to the end of term, with the days off already taken out.',
+      ],
+      [
+        'added',
+        'Extra credit. Five bonus points on the midterm is an assignment worth zero that you scored five on, which is exactly what a professor adds to the top of the fraction and not to the bottom \u2014 so that is what it now does. It is never the score that gets dropped, either.',
+      ],
+      [
+        'added',
+        'A beta channel, under Settings \u2192 Features. An account set to beta sees the things that are finished but not yet switched on for everyone; everybody else sees the app as it was last given the green light. One version of the app either way, and pushing an update is exactly what it was before.',
+      ],
+    ],
+  },
+  {
     version: '1.3.0',
     date: '2026-08-29',
     name: 'Just come in',
