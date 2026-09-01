@@ -8,6 +8,33 @@
 
 export const RELEASES = [
   {
+    version: '1.4.2',
+    date: '2026-09-01',
+    name: 'Putting the syllabus in',
+    notes: [
+      [
+        'fixed',
+        'Entering an exam often refused to let you say it was in class. The form opens on today, “in class” can only be offered on a day the class actually meets, and today is not a lecture day four days out of seven — so picking Test in a Mon/Wed/Fri course on a Tuesday handed you a time picker and a length in minutes instead. Picking an exam kind now moves the date to that course’s next class, and switching course moves it to that one’s. A date you typed yourself is never moved.',
+      ],
+      [
+        'fixed',
+        'The Today / Tomorrow / Next week buttons set the date and nothing else, so tapping Tomorrow onto a lecture day left an exam sitting on “another time” with a 9 AM box under it, while typing the same date into the field beside them got it right. Both do the same thing now.',
+      ],
+      [
+        'changed',
+        'For a quiz, test or final, those three buttons are the next three days that class meets — Wed Sep 2, Fri Sep 4, Mon Sep 7 — with days off already taken out. “Tomorrow” is a real answer for a problem set and almost never one for a midterm, and an in-class quiz is now one tap on the date rather than a trip through a calendar. Assignments keep Today, Tomorrow and Next week.',
+      ],
+      [
+        'added',
+        'Add another, next to Add. A syllabus is one course, one kind and eight rows, and closing the form between each of them charged you for the course, the kind, the category and the points every time. This keeps all of it, clears the title and the notes, and counts the title on for you — add “Quiz 1” and the next one is waiting as “Quiz 2”.',
+      ],
+      [
+        'fixed',
+        'An exam on a day with both a lecture and a lab defaulted to the later of the two, because it was matching against a due time of 11:59pm that nobody had chosen. It takes the first meeting of the day now; the two time buttons still say which.',
+      ],
+    ],
+  },
+  {
     version: '1.4.1',
     date: '2026-08-29',
     name: 'Handed in, waiting on a grade',

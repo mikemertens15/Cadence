@@ -8,6 +8,7 @@ import {
   meetingFor,
   eventSlot,
   meetsOn,
+  nextMeeting,
 } from '../src/assignments.js';
 
 // Filing work in the right bucket is the one piece of guessing this app does on
@@ -277,4 +278,30 @@ test('two meetings on one day come back earliest first', () => {
     meetsOn(both, '2026-10-05').map((m) => m.id),
     ['lec', 'lab'],
   );
+});
+
+// Picking "Test" on a day the class doesn't meet used to leave no way to say
+// "in class" at all — the one thing an exam nearly always is. These are the
+// rule the form now follows instead.
+test('an exam lands on the next day the class actually meets', () => {
+  // Tue 6 Oct in a Mon/Wed course is Wednesday's problem.
+  assert.equal(nextMeeting(MWF, '2026-10-06'), '2026-10-07');
+});
+
+test('a day the class already meets is the next one', () => {
+  assert.equal(nextMeeting(MWF, '2026-10-05'), '2026-10-05');
+});
+
+test('a weekend rolls forward into the week, not back', () => {
+  assert.equal(nextMeeting(MWF, '2026-10-10'), '2026-10-12');
+});
+
+test('a course with no timetable has no next meeting to move to', () => {
+  assert.equal(nextMeeting([], '2026-10-06'), null);
+  assert.equal(nextMeeting(MWF, ''), null);
+});
+
+test('a course meeting once a week is still found within the week', () => {
+  const friday = [meeting('f', 4, '09:00', '11:50')];
+  assert.equal(nextMeeting(friday, '2026-10-05'), '2026-10-09');
 });

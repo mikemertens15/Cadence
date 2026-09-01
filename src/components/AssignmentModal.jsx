@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { colors, tone, fonts, courseColor } from '../theme';
 import {
   dayStr,
@@ -17,6 +17,7 @@ import {
   labelForTime,
   dayPart,
   timePart,
+  shortDay,
 } from '../dates';
 import {
   KINDS,
@@ -25,6 +26,7 @@ import {
   kindLabel,
   DEFAULT_EVENT_MINUTES,
   meetsOn,
+  nextMeeting,
   suggestCategory,
   suggestPoints,
   seriesTitles,
@@ -71,6 +73,23 @@ import {
 // meeting, and the answer is one tap rather than a time and a duration. The rest
 // — a common final at 8am on a Saturday in a building you have never been to —
 // is what "another time" is still there for.
+//
+// 1.4.2 finished that thought, because half the time it wasn't being offered at
+// all. The form opens on today, today is not a lecture day four times out of
+// seven, and "in class" can only be offered on a day the class meets — so
+// picking Test in a Mon/Wed/Fri course on a Tuesday produced a 9 AM time picker
+// and no way to say the one thing an exam nearly always is. Three changes, all
+// of them the same idea: **the date follows the timetable**. Choosing an exam
+// kind moves an untouched date to the next meeting; the quick-pick row offers
+// that course's next three class days instead of Today / Tomorrow / Next week;
+// and every control that sets the date now re-asks the in-class question,
+// rather than only the one that happened to remember to.
+//
+// The other cost was the sitting rather than the row. A syllabus is one course,
+// one kind and eight rows, and closing the form between each of them re-charges
+// the course, the kind, the category and the points every time — so **Add
+// another** keeps all of that, clears the title and notes, and counts the title
+// on for you when it ends in a number.
 //
 // Since 1.0 the kind decides one more thing, and it's the one that was costing
 // the most: **which category the work goes in**. Picking "Quiz" and then picking
@@ -147,6 +166,12 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
   const [touchedCategory, setTouchedCategory] = useState(false);
   const [touchedPoints, setTouchedPoints] = useState(false);
 
+  // And a third, for the date. The kind and course pickers move an untouched
+  // date onto a day the class actually meets — see changeKind — and the one
+  // thing they must never do is move a date somebody typed off a syllabus. A
+  // date being edited was chosen the moment it was stored.
+  const [touchedDay, setTouchedDay] = useState(editing);
+
   // The date and the hour, held apart. They are two separate questions now that
   // the second one has twenty-five answers instead of fourteen hundred, and a
   // combined datetime-local string was only ever being split and rejoined at
@@ -195,6 +220,13 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  // What the last "Add another" wrote, so the form can say so. The modal
+  // staying open is the whole point of that button and also its one risk:
+  // nothing moves, so without a line of text there is no way to tell a save
+  // that happened from a tap that missed.
+  const [added, setAdded] = useState('');
+  const titleRef = useRef(null);
+
   const cats = categoriesByCourse.get(courseId) ?? [];
   const course = courses.find((c) => c.id === courseId);
   const event = isEvent(kind);
@@ -206,6 +238,22 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
   // doesn't meet — which is what decides whether the form asks for an hour at
   // all, and what "In class" is even offered against.
   const slots = useMemo(() => meetsOn(courseMeetings, day), [courseMeetings, day]);
+
+  // The next few days this course meets, for the quick-pick row. Days already
+  // given over to a break are left out: there is no class on Thanksgiving, so
+  // offering it as the date of an in-class exam is offering a date that can't
+  // be right. Three weeks is the search window — a course meeting once a week
+  // still fills the row, and one that has run out of term stops rather than
+  // walking forever.
+  const classDays = useMemo(() => {
+    if (!event || !courseMeetings.length) return [];
+    const out = [];
+    let d = dayStr();
+    for (let i = 0; i < 21 && out.length < 3; i += 1, d = addDays(d, 1)) {
+      if (meetsOn(courseMeetings, d) && !breakOn(d)) out.push(d);
+    }
+    return out;
+  }, [event, courseMeetings, breakOn]);
 
   // Which of them, when a course has a lecture in the morning and a lab in the
   // afternoon. The nearest to the hour already on the row, so an exam moved from
@@ -282,9 +330,53 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
     });
   }
 
-  // Quick date chips beat a calendar for the three dates that cover almost
-  // everything.
-  const pickDay = (offset) => setDay(addDays(dayStr(), offset));
+  /**
+   * Turn "in class" on for a day, pointed at the right meeting.
+   *
+   * `slot` picks the meeting nearest the hour on the row — that is what lets
+   * you move a midterm from the lecture to the lab by nudging the time. But a
+   * new row carries 11:59pm, and the meeting nearest to 11:59pm in a course
+   * with a 9am lecture and a 4pm lab is the lab, so a new exam defaulted to the
+   * wrong one of the two. An hour nobody has touched is not an opinion; the
+   * first meeting of the day is the better default to hold.
+   */
+  const enterClass = (mtgs, on) => {
+    const meeting = meetsOn(mtgs, on);
+    setAtClass(Boolean(meeting));
+    if (meeting && (time === END_OF_DAY || time === '09:00')) {
+      setTime(meeting[0].start_time.slice(0, 5));
+    }
+  };
+
+  /**
+   * One place where the date changes, because every control that changes it
+   * owes the same follow-up.
+   *
+   * "In class" is a claim about a day: it can only be true where the course
+   * meets, and it is nearly always true where it does. The date input has said
+   * so since 1.4 — but the Today / Tomorrow chips beside it were setting the day
+   * and nothing else, so tapping "Tomorrow" onto a lecture day left an exam
+   * sitting on "another time" with a 9 AM box under it. Two controls answering
+   * the same question two different ways is the bug; one function is the fix.
+   */
+  const changeDay = (next) => {
+    setDay(next);
+    setTouchedDay(true);
+    if (isEvent(kind)) enterClass(courseMeetings, next);
+  };
+
+  /**
+   * Move an untouched date onto the next day this course meets.
+   *
+   * The form opens on today, and today is not a lecture day four times out of
+   * seven — so picking "Test" on a Tuesday in a Mon/Wed/Fri course was offering
+   * a 9 AM time picker and no way to say "in class" at all, which is the one
+   * thing an exam almost always is. Only ever moves a date nobody has chosen,
+   * and only forward to a real meeting; a date typed off a syllabus stays
+   * exactly where it was typed.
+   */
+  const meetingDay = (mtgs, from) =>
+    from && !touchedDay && !meetsOn(mtgs, from) ? (nextMeeting(mtgs, from) ?? from) : from;
 
   /**
    * Switching kind re-times the row, but only the part of it nobody chose.
@@ -307,8 +399,12 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
       if (time === '09:00') setTime(END_OF_DAY);
       return;
     }
-    if (meetsOn(courseMeetings, day)) setAtClass(true);
-    else if (time === END_OF_DAY) setTime('09:00');
+    const on = meetingDay(courseMeetings, day);
+    if (on !== day) setDay(on);
+    enterClass(courseMeetings, on);
+    // Nothing to sit in: an exam still shouldn't inherit a problem set's
+    // midnight, so an untouched end-of-day becomes a believable morning.
+    if (!meetsOn(courseMeetings, on) && time === END_OF_DAY) setTime('09:00');
   };
 
   const changeCourse = (next) => {
@@ -319,8 +415,14 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
     applySuggestion(kind, next, { force: true });
     // And a meeting belongs to a course too: "in class" against the timetable
     // of the course you just switched away from is not a statement about this
-    // one either.
-    if (isEvent(kind)) setAtClass(Boolean(meetsOn(meetingsByCourse.get(next) ?? [], day)));
+    // one either. An exam follows the new course's timetable the same way it
+    // followed the old one's — onto its next meeting, if the date is still one
+    // nobody chose.
+    if (!isEvent(kind)) return;
+    const mtgs = meetingsByCourse.get(next) ?? NO_MEETINGS;
+    const on = meetingDay(mtgs, day);
+    if (on !== day) setDay(on);
+    enterClass(mtgs, on);
   };
 
   /**
@@ -366,7 +468,7 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
 
   const repeating = !editing && Boolean(day) && dates.length > 1;
 
-  async function save() {
+  async function save({ again = false } = {}) {
     if (!canSave) return;
     setBusy(true);
 
@@ -416,6 +518,27 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
     }
 
     setBusy(false);
+
+    // Entering a syllabus is one course, one kind and eight rows, and closing
+    // the form between each of them charges the course, the kind, the category
+    // and the points over again — four taps to say what has not changed. So
+    // this button keeps every one of those and clears the two that do change:
+    // the title (advanced to the next number when it ends in one, since that
+    // is what you were about to type) and the notes.
+    //
+    // Repeat goes back to "just once". A run of fourteen weekly rows is
+    // finished when it's written, and the next thing added is a new decision
+    // rather than fourteen more.
+    if (again && !editing) {
+      setAdded(repeating ? `${dates.length} \u00d7 ${fields.title}` : fields.title);
+      setTitle(nextInSequence(fields.title));
+      setNotes('');
+      setRepeat('once');
+      titleRef.current?.focus();
+      titleRef.current?.select();
+      return;
+    }
+
     onClose();
   }
 
@@ -448,15 +571,23 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
           <GhostButton onClick={onClose} style={{ marginLeft: editing ? 0 : 'auto' }}>
             Cancel
           </GhostButton>
-          <PrimaryButton onClick={save} disabled={!canSave}>
+          {/* The syllabus button. Not offered while editing, where there is no
+              "another" — you are changing one row that already exists. */}
+          {!editing && (
+            <GhostButton onClick={() => save({ again: true })} disabled={!canSave}>
+              Add another
+            </GhostButton>
+          )}
+          <PrimaryButton onClick={() => save()} disabled={!canSave}>
             {busy ? 'Saving\u2026' : editing ? 'Save' : repeating ? `Add ${count}` : 'Add'}
           </PrimaryButton>
         </>
       }
     >
-      <Field label="What is it?">
+      <Field label="What is it?" hint={added ? `Added ${added}` : undefined}>
         <input
           autoFocus
+          ref={titleRef}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder={event ? 'Exam 2' : 'Problem Set 4'}
@@ -507,22 +638,47 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
         label={event ? 'When is it?' : 'Due'}
         hint={event ? 'goes on your schedule' : undefined}
       >
+        {/* Which three dates are worth a chip depends on what this is.
+            "Tomorrow" is a real answer for a problem set and almost never one
+            for a midterm — an exam happens on a class day, and the app has
+            known which those are since the course was entered. So the same row
+            offers the next three lecture days instead, and an in-class quiz
+            becomes one tap on the date rather than a trip through a calendar. */}
         <div style={{ display: 'flex', gap: 7, marginBottom: 9, flexWrap: 'wrap' }}>
-          <Chip onClick={() => pickDay(0)}>Today</Chip>
-          <Chip onClick={() => pickDay(1)}>Tomorrow</Chip>
-          <Chip onClick={() => pickDay(7)}>Next week</Chip>
-          <Chip onClick={() => setDay('')}>No date</Chip>
+          {classDays.length > 0 ? (
+            classDays.map((d) => (
+              <Chip key={d} active={day === d} onClick={() => changeDay(d)}>
+                {`${shortDay(parseDay(d))} ${monthDay(parseDay(d))}`}
+              </Chip>
+            ))
+          ) : (
+            <>
+              <Chip active={day === dayStr()} onClick={() => changeDay(dayStr())}>
+                Today
+              </Chip>
+              <Chip
+                active={day === addDays(dayStr(), 1)}
+                onClick={() => changeDay(addDays(dayStr(), 1))}
+              >
+                Tomorrow
+              </Chip>
+              <Chip
+                active={day === addDays(dayStr(), 7)}
+                onClick={() => changeDay(addDays(dayStr(), 7))}
+              >
+                Next week
+              </Chip>
+            </>
+          )}
+          <Chip active={!day} onClick={() => changeDay('')}>
+            No date
+          </Chip>
         </div>
 
         <input
           type="date"
           value={day}
-          onChange={(e) => {
-            setDay(e.target.value);
-            // A date on a day the class meets is an in-class exam by default,
-            // and a date on a day it doesn't cannot be one at all.
-            if (event) setAtClass(Boolean(meetsOn(courseMeetings, e.target.value)));
-          }}
+          onChange={(e) => changeDay(e.target.value)}
           style={{ ...input, width: '100%' }}
         />
 
@@ -532,7 +688,7 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
             the app in week one. */}
         {event && day && slots?.length > 0 && (
           <div style={{ display: 'flex', gap: 7, marginTop: 9, flexWrap: 'wrap', alignItems: 'center' }}>
-            <Chip active={atClass} onClick={() => setAtClass(true)}>
+            <Chip active={atClass} onClick={() => enterClass(courseMeetings, day)}>
               In class
             </Chip>
             <Chip active={!atClass} onClick={() => setAtClass(false)}>
@@ -734,7 +890,7 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={2}
-              placeholder="Chapters 4\u20135, show work"
+              placeholder="Chapters 4–5, show work"
               style={{ ...input, resize: 'vertical' }}
             />
           </Field>
@@ -758,6 +914,18 @@ export function AssignmentModal({ assignment, defaultCourseId, onClose, phone })
       )}
     </ModalShell>
   );
+}
+
+/**
+ * The title the next row in a sitting probably wants.
+ *
+ * "Quiz 3" saved means "Quiz 4" is what you were about to type, and typing it
+ * is the last thing "Add another" would still be charging you for. A title with
+ * no number on the end has no next — "Midterm 2" from "Midterm" is a guess
+ * about the world rather than about the typing — so that one clears and waits.
+ */
+function nextInSequence(title) {
+  return /\d+\s*$/.test(title) ? seriesTitles(title, 2)[1] : '';
 }
 
 const isUngradedReason = (reason) => reason === 'ungraded' || reason === 'history-ungraded';

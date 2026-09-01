@@ -176,16 +176,19 @@ export function PrimaryButton({ onClick, children, disabled, type = 'button', st
   );
 }
 
-export function GhostButton({ onClick, children, style }) {
+export function GhostButton({ onClick, children, disabled, style }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       style={{
         padding: '11px 18px',
         borderRadius: 22,
         font: `600 13px ${fonts.sans}`,
         color: colors.muted2,
+        opacity: disabled ? 0.45 : 1,
+        cursor: disabled ? 'default' : 'pointer',
         ...style,
       }}
     >

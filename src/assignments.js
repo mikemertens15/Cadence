@@ -9,7 +9,7 @@
 // Everything else is the same for both, which is why this is one column on
 // assignments rather than a second table.
 
-import { dowIndex, toMinutes } from './dates.js';
+import { addDays, dowIndex, parseDay, toMinutes } from './dates.js';
 
 export const KINDS = [
   // key, label, short, event?
@@ -101,6 +101,25 @@ export function eventSlot(a, meetings = []) {
   const at = a?.due_at ? new Date(a.due_at) : null;
   const start = at && !Number.isNaN(at.getTime()) ? at.getHours() * 60 + at.getMinutes() : 0;
   return { start, end: start + eventMinutes(a), meeting: null };
+}
+
+/**
+ * The first day on or after `from` that this course meets, or null.
+ *
+ * An exam is the class doing something different, so "when is it?" almost
+ * always answers to a day the class already meets — and a form that opens on
+ * today can't offer "in class" at all four days out of seven. Walking forward a
+ * week finds the day that question was really about. Null for a course with no
+ * timetable, which is a real answer: there is no next meeting to move to.
+ */
+export function nextMeeting(meetings = [], from) {
+  if (!meetings.length || !from) return null;
+  const days = new Set(meetings.map((m) => m.day_of_week));
+  for (let i = 0; i < 7; i++) {
+    const day = addDays(from, i);
+    if (days.has(dowIndex(parseDay(day)))) return day;
+  }
+  return null;
 }
 
 /** Does this course meet on the weekday of the given local date string? */
