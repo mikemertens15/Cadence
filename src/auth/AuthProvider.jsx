@@ -45,9 +45,13 @@ const SITE_URL = (() => {
 })();
 
 // How close to expiry an access token has to be before it's treated as already
-// dead. Thirty seconds: a token with ten left will expire somewhere in the
-// middle of the ten reads the app opens with, which fails half of them.
-const STALE_MS = 30_000;
+// dead. Two minutes, not thirty seconds: supabase-js refreshes on its own
+// ticker when fewer than ~120s remain, but getSession() only waits for that
+// refresh inside a 90s margin. A tab that opens in the gap — token still
+// "valid" according to getSession, refresh already in flight — used to send
+// the semester reads out carrying the old JWT. Matching the ticker means we
+// wait for the new one before anyone downstream can fire a request.
+const STALE_MS = 120_000;
 
 const isStale = (s) =>
   typeof s?.expires_at === 'number' && s.expires_at * 1000 - Date.now() < STALE_MS;
@@ -79,13 +83,12 @@ export function AuthProvider({ children }) {
       let sess = data.session ?? null;
 
       // An access token lives an hour, and a tab that has been shut since last
-      // night wakes up holding a dead one. getSession() hands that straight
-      // back and starts a refresh in the background — so the ten reads this app
-      // opens with went out carrying an expired JWT, came back 401, and landed
-      // on "Couldn't load your semester" nearly every morning.
-      //
-      // Waiting for the refresh here costs one round trip on a cold open and
-      // means nothing downstream ever sees a token that has already expired.
+      // night wakes up holding a dead one. getSession() will refresh if the
+      // token is inside a 90s margin, but the client's own ticker starts one
+      // earlier (~120s), and a token the client clock still likes can already
+      // be dead on the server. Waiting out a refresh here, in that wider
+      // window, means the semester reads never leave with a JWT the server is
+      // about to reject.
       if (isStale(sess)) {
         const { data: fresh, error } = await supabase.auth.refreshSession();
         // A refresh token that the server no longer has — rotated away, or from
@@ -103,6 +106,11 @@ export function AuthProvider({ children }) {
     })();
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
+      // INITIAL_SESSION is the stored token, which is the one getSession()
+      // above may be in the middle of replacing. Honouring it here would
+      // publish that token to the rest of the app — and kick off the
+      // semester reads — before the refresh has finished.
+      if (event === 'INITIAL_SESSION') return;
       setSession(sess ?? null);
       if (event === 'PASSWORD_RECOVERY') setRecovering(true);
     });

@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../auth/AuthProvider';
+import { isJwtError } from '../auth/jwtError';
 import { dayStr, toLocalInput, fromLocalInput, dayPart } from '../dates';
 import { meetingFor } from '../assignments';
 import { resolveFeatures, channelOf, inChannel } from '../features';
@@ -113,7 +114,7 @@ const groupBy = (rows, key) => {
 };
 
 export function SemesterProvider({ children }) {
-  const { session } = useAuth();
+  const { session, loading: authLoading } = useAuth();
   const userId = session?.user?.id ?? null;
 
   /**
@@ -149,10 +150,28 @@ export function SemesterProvider({ children }) {
     }
   });
 
+  // Incremented on every call so a slow, failed read cannot overwrite a
+  // newer one that already succeeded. Without this, the open-app race is:
+  // request 1 goes out with the expired JWT, a refresh lands, request 2
+  // succeeds, then request 1 comes back 401 and paints "JWT expired" on
+  // top of a semester that is already on screen. Try again always worked
+  // because it was a third read with no older request left to clobber it.
+  const fetchGen = useRef(0);
+
   const fetchAll = useCallback(async () => {
+    // Auth is still deciding whether the stored token is any good. Reading
+    // now would send the same request Try again used to have to rescue:
+    // whatever was in localStorage, including a JWT the refresh in flight
+    // is about to replace. Resume / realtime listeners hit this path too.
+    if (authLoading) return;
+
+    const gen = ++fetchGen.current;
+    const stillThis = () => gen === fetchGen.current;
+
     // No token is not the same as no data, but it is the same as nothing to
     // read: a signed-out client can only produce 401s.
     if (!userId || !accessToken) {
+      if (!stillThis()) return;
       setRows(EMPTY);
       setLoaded(false);
       // Signing out un-loads the app: the next sign-in is a first read again,
@@ -163,22 +182,53 @@ export function SemesterProvider({ children }) {
       return;
     }
 
+    const read = () => Promise.all(TABLES.map(([, table]) => supabase.from(table).select('*')));
+
     // RLS already scopes every one of these to this user; the queries don't
     // need a where clause and couldn't widen the result if they had one.
     let results;
     try {
-      results = await Promise.all(TABLES.map(([, table]) => supabase.from(table).select('*')));
+      results = await read();
     } catch (err) {
       // supabase-js normally folds a dead connection into `error` rather than
       // rejecting, but a phone waking up with no signal can throw before the
       // request is even built, and an unhandled rejection here would leave the
       // app stuck on the splash forever.
+      if (!stillThis()) return;
       setError(err?.message || 'Could not reach Cadence.');
       setLoading(false);
       return;
     }
 
-    const failed = results.find((r, i) => r.error && !OPTIONAL.has(TABLES[i][0]));
+    if (!stillThis()) return;
+
+    let failed = results.find((r, i) => r.error && !OPTIONAL.has(TABLES[i][0]));
+
+    // The server, not the client clock, is what decides a JWT is dead. A
+    // token that still looks fine locally — clock a minute behind, or the
+    // stored `expires_at` a little ahead of the JWT's own `exp` — goes out,
+    // comes back 401, and used to sit on "Couldn't load your semester"
+    // until someone pressed Try again. The press always worked because by
+    // then a refresh had already landed. Do that refresh here, once, and
+    // re-read; if a TOKEN_REFRESHED event has already started a newer
+    // fetch, `stillThis` drops this one on the floor.
+    if (failed && isJwtError(failed.error)) {
+      const { error: refreshError } = await supabase.auth.refreshSession();
+      if (!stillThis()) return;
+      if (!refreshError) {
+        try {
+          results = await read();
+        } catch (err) {
+          if (!stillThis()) return;
+          setError(err?.message || 'Could not reach Cadence.');
+          setLoading(false);
+          return;
+        }
+        if (!stillThis()) return;
+        failed = results.find((r, i) => r.error && !OPTIONAL.has(TABLES[i][0]));
+      }
+    }
+
     if (failed) {
       // Deliberately does *not* clear `rows`. A failed refresh on a phone coming
       // out of a pocket is the common case, and blanking the dataset would turn
@@ -197,16 +247,17 @@ export function SemesterProvider({ children }) {
     setLoaded(true);
     everLoaded.current = true;
     setLoading(false);
-  }, [userId, accessToken]);
+  }, [userId, accessToken, authLoading]);
 
   useEffect(() => {
+    if (authLoading) return;
     // Only a first read blocks the app on the splash screen. Now that a token
     // refresh re-runs this — roughly hourly, and that is the point — blanking
     // the whole app to re-read rows already on screen would trade a silent
     // background refetch for a flash of the loading screen every hour.
     if (!everLoaded.current) setLoading(true);
     fetchAll();
-  }, [fetchAll]);
+  }, [fetchAll, authLoading]);
 
   // Live sync across devices. Every table funnels into one debounced refetch:
   // saving a course writes a course row, four category rows and three meeting
